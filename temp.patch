@@ -1,29 +1,609 @@
-From f288230684a183fd9a6ad4a43d8c2a0a9a7c3c74 Mon Sep 17 00:00:00 2001
-From: Donella Kreiger <ahlyl94@gmail.com>
-Date: Fri, 9 Aug 2024 20:08:37 +0800
-Subject: [PATCH] [Game] Teleport Book cannot be used when not in the main
- world (#1067)
+From 8b57d915882436eb19ae3ce50969e138fef54f20 Mon Sep 17 00:00:00 2001
+From: NLObP <38990417+NL0bP@users.noreply.github.com>
+Date: Fri, 9 Aug 2024 16:28:40 +0300
+Subject: [PATCH] [Game] WIP: Let's start adding Achievements.
 
 ---
- AAEmu.Game/Models/Game/Skills/Skill.cs | 8 ++++++++
- 1 file changed, 8 insertions(+)
+ .../Packets/G2C/SCAchievementChangedPacket.cs | 25 ++++++
+ .../G2C/SCAchievementCompletedPacket.cs       | 24 ++++++
+ .../G2C/SCAchievementItemSentPacket.cs        | 25 ++++++
+ .../Packets/G2C/SCAchievementResetedPacket.cs | 27 +++++++
+ .../Core/Packets/G2C/SCAchievementsPacket.cs  | 31 +++++++
+ .../Game/Achievement/AchievementInfo.cs       | 11 +++
+ .../Game/Achievement/AchievementObjectives.cs | 12 +++
+ .../Models/Game/Achievement/Achievements.cs   | 35 ++++++++
+ .../Models/Game/Achievement/CharRecords.cs    | 12 +++
+ .../Enums/AchievementAdventureCategory.cs     |  9 +++
+ .../Achievement/Enums/AchievementCategory.cs  | 14 ++++
+ .../Enums/AchievementCombatCategory.cs        | 10 +++
+ .../Enums/AchievementEventCategory.cs         |  7 ++
+ .../Achievement/Enums/AchievementFilter.cs    | 11 +++
+ .../Game/Achievement/Enums/AchievementKind.cs |  7 ++
+ .../Enums/AchievementLevelCategory.cs         | 17 ++++
+ .../Enums/AchievementLifeCategory.cs          | 11 +++
+ .../Enums/AchievementNormalCategory.cs        | 10 +++
+ .../Enums/AchievementSeasonCategory.cs        | 10 +++
+ .../Enums/AchievementSocietyCategory.cs       |  9 +++
+ .../Game/Achievement/Enums/CharRecordKind.cs  | 81 +++++++++++++++++++
+ .../Achievement/Enums/RewardItemReason.cs     | 10 +++
+ .../Achievement/PreCompletedAchievements.cs   |  9 +++
+ 23 files changed, 417 insertions(+)
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAchievementChangedPacket.cs
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAchievementCompletedPacket.cs
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAchievementItemSentPacket.cs
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAchievementResetedPacket.cs
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAchievementsPacket.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/AchievementInfo.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/AchievementObjectives.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Achievements.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/CharRecords.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementAdventureCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementCombatCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementEventCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementFilter.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementKind.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementLevelCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementLifeCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementNormalCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementSeasonCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/AchievementSocietyCategory.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/CharRecordKind.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/Enums/RewardItemReason.cs
+ create mode 100644 AAEmu.Game/Models/Game/Achievement/PreCompletedAchievements.cs
 
-diff --git a/AAEmu.Game/Models/Game/Skills/Skill.cs b/AAEmu.Game/Models/Game/Skills/Skill.cs
-index 3293116c80..4ce81163ca 100644
---- a/AAEmu.Game/Models/Game/Skills/Skill.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Skill.cs
-@@ -247,6 +247,14 @@ public SkillResult Use(BaseUnit caster, SkillCaster casterCaster, SkillCastTarge
-             return SkillResult.TooFarRange;
-         }
- 
-+        if (Template.Effects.Count > 0 && Template.Effects.First()?.Template is OpenPortalEffect)
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAchievementChangedPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAchievementChangedPacket.cs
+new file mode 100644
+index 000000000..8ce61c47c
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAchievementChangedPacket.cs
+@@ -0,0 +1,25 @@
++﻿using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++
++namespace AAEmu.Game.Core.Packets.G2C
++{
++    public class SCAchievementChangedPacket : GamePacket
++    {
++        private readonly uint _id;
++        private readonly int _amount;
++
++        public SCAchievementChangedPacket(uint id, int amount) : base(SCOffsets.SCAchievementChangedPacket, 5)
 +        {
-+            if (0 != caster.InstanceId)
-+            {
-+                return SkillResult.InvalidLocation;
-+            }
++            _id = id;
++            _amount = amount;
 +        }
 +
-         // Calculate casting time if needed
-         var castTime = 0;
-         if (Template.CastingTime > 0)
++        public override PacketStream Write(PacketStream stream)
++        {
++            stream.Write(_id);     // type
++            stream.Write(_amount); // amount
++
++            return stream;
++        }
++    }
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAchievementCompletedPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAchievementCompletedPacket.cs
+new file mode 100644
+index 000000000..fad2a1da2
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAchievementCompletedPacket.cs
+@@ -0,0 +1,24 @@
++﻿using System;
++using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++
++namespace AAEmu.Game.Core.Packets.G2C
++{
++    public class SCAchievementCompletedPacket : GamePacket
++    {
++        private readonly uint _id;
++
++        public SCAchievementCompletedPacket(uint id) : base(SCOffsets.SCAchievementCompletedPacket, 5)
++        {
++            _id = id;
++        }
++
++        public override PacketStream Write(PacketStream stream)
++        {
++            stream.Write(_id);             // type
++            stream.Write(DateTime.UtcNow); // complete
++
++            return stream;
++        }
++    }
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAchievementItemSentPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAchievementItemSentPacket.cs
+new file mode 100644
+index 000000000..c01705bb6
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAchievementItemSentPacket.cs
+@@ -0,0 +1,25 @@
++﻿using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++
++namespace AAEmu.Game.Core.Packets.G2C
++{
++    public class SCAchievementItemSentPacket : GamePacket
++    {
++        private readonly uint _id;
++        private readonly bool _byMail;
++
++        public SCAchievementItemSentPacket(uint id, bool byMail) : base(SCOffsets.SCAchievementItemSentPacket, 5)
++        {
++            _id = id;
++            _byMail = byMail;
++        }
++
++        public override PacketStream Write(PacketStream stream)
++        {
++            stream.Write(_id);     // type
++            stream.Write(_byMail); // byMail
++
++            return stream;
++        }
++    }
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAchievementResetedPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAchievementResetedPacket.cs
+new file mode 100644
+index 000000000..cacb9f68e
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAchievementResetedPacket.cs
+@@ -0,0 +1,27 @@
++﻿using System;
++using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++
++namespace AAEmu.Game.Core.Packets.G2C
++{
++    public class SCAchievementResetedPacket : GamePacket
++    {
++        private readonly uint _id;
++        private readonly int _amount;
++
++        public SCAchievementResetedPacket(uint id, int amount) : base(SCOffsets.SCAchievementResetedPacket, 5)
++        {
++            _id = id;
++            _amount = amount;
++        }
++
++        public override PacketStream Write(PacketStream stream)
++        {
++            stream.Write(_id);     // type
++            stream.Write(_amount); // amount
++            stream.Write(DateTime.UtcNow); // complete
++
++            return stream;
++        }
++    }
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAchievementsPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAchievementsPacket.cs
+new file mode 100644
+index 000000000..e33eb0c80
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAchievementsPacket.cs
+@@ -0,0 +1,31 @@
++﻿using System;
++using System.Collections.Generic;
++using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++using AAEmu.Game.Models.Game.Achievement;
++
++namespace AAEmu.Game.Core.Packets.G2C
++{
++    public class SCAchievementsPacket : GamePacket
++    {
++        private readonly List<AchievementInfo> _achievements;
++
++        public SCAchievementsPacket(List<AchievementInfo> achievements) : base(SCOffsets.SCAchievementsPacket, 5)
++        {
++            _achievements = achievements;
++        }
++
++        public override PacketStream Write(PacketStream stream)
++        {
++            stream.Write(_achievements.Count); // count // больше 50 не посылаем
++            foreach (var achievement in _achievements)
++            {
++                stream.Write(achievement.Id);       // type
++                stream.Write(achievement.Amount);   // amount
++                stream.Write(achievement.Complete); // complete
++            }
++
++            return stream;
++        }
++    }
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/AchievementInfo.cs b/AAEmu.Game/Models/Game/Achievement/AchievementInfo.cs
+new file mode 100644
+index 000000000..e16171d2c
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/AchievementInfo.cs
+@@ -0,0 +1,11 @@
++﻿using System;
++
++namespace AAEmu.Game.Models.Game.Achievement
++{
++    public partial class AchievementInfo
++    {
++        public uint Id { get; set; }
++        public uint Amount { get; set; }
++        public DateTime Complete { get; set; }
++    }
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/AchievementObjectives.cs b/AAEmu.Game/Models/Game/Achievement/AchievementObjectives.cs
+new file mode 100644
+index 000000000..cc32a958b
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/AchievementObjectives.cs
+@@ -0,0 +1,12 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement
++{
++    public partial class AchievementObjectives
++    {
++        public uint Id { get; set; }
++        public uint AchievementId { get; set; }
++        public bool OrUnitReqs { get; set; }
++        public uint RecordId { get; set; }
++
++        public virtual Achievements Achievement { get; set; }
++    }
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Achievements.cs b/AAEmu.Game/Models/Game/Achievement/Achievements.cs
+new file mode 100644
+index 000000000..7bbfc95e0
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Achievements.cs
+@@ -0,0 +1,35 @@
++﻿using System.Collections.Generic;
++using AAEmu.Game.Models.Game.Items.Templates;
++
++namespace AAEmu.Game.Models.Game.Achievement
++{
++    public partial class Achievements
++    {
++        public Achievements()
++        {
++            AchievementObjectives = new HashSet<AchievementObjectives>();
++        }
++
++        public uint Id { get; set; }
++        public uint CategoryId { get; set; }
++        public uint CompleteNum { get; set; }
++        public bool CompleteOr { get; set; }
++        public string Description { get; set; }
++        public uint GradeId { get; set; }
++        public uint IconId { get; set; }
++        public bool IsActive { get; set; }
++        public bool IsHidden { get; set; }
++        public uint ItemNum { get; set; }
++        public uint ItemId { get; set; }
++        public string Name { get; set; }
++        public bool OrUnitReqs { get; set; }
++        public uint ParentAchievementId { get; set; }
++        public uint Priority { get; set; }
++        public uint SubCategoryId { get; set; }
++        public string Summary { get; set; }
++
++        //public virtual Icons Icon { get; set; }
++        public virtual ItemTemplate Item { get; set; }
++        public virtual ICollection<AchievementObjectives> AchievementObjectives { get; set; }
++    }
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/CharRecords.cs b/AAEmu.Game/Models/Game/Achievement/CharRecords.cs
+new file mode 100644
+index 000000000..208199a71
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/CharRecords.cs
+@@ -0,0 +1,12 @@
++﻿using AAEmu.Game.Models.Game.Achievement.Enums;
++
++namespace AAEmu.Game.Models.Game.Achievement
++{
++    public partial class CharRecords
++    {
++        public uint Id { get; set; }
++        public CharRecordKind KindId { get; set; }
++        public uint Value1 { get; set; }
++        public uint Value2 { get; set; }
++    }
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementAdventureCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementAdventureCategory.cs
+new file mode 100644
+index 000000000..920d6d87c
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementAdventureCategory.cs
+@@ -0,0 +1,9 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementAdventureCategory
++{
++    Invalid = 0,
++    Quest = 1,
++    Indun = 2,
++    Get = 3
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCategory.cs
+new file mode 100644
+index 000000000..fb8325215
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCategory.cs
+@@ -0,0 +1,14 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementCategory
++{
++    Invalid = 0,
++    Normal = 1,
++    Combat = 2,
++    Life = 3,
++    Adventure = 4,
++    Society = 5,
++    Level = 6,
++    Season = 7,
++    Event = 8
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCombatCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCombatCategory.cs
+new file mode 100644
+index 000000000..d09a74fc2
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementCombatCategory.cs
+@@ -0,0 +1,10 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementCombatCategory
++{
++    Invalid = 0,
++    Pvp = 1,
++    Siege = 2,
++    Battle = 3,
++    Get = 4
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementEventCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementEventCategory.cs
+new file mode 100644
+index 000000000..81486eee1
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementEventCategory.cs
+@@ -0,0 +1,7 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementEventCategory
++{
++    Invalid = 0,
++    Event = 1
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementFilter.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementFilter.cs
+new file mode 100644
+index 000000000..1cd61a973
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementFilter.cs
+@@ -0,0 +1,11 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementFilter
++{
++    Invalid = 0,
++    All = 1,
++    Complete = 2,
++    Uncomplete = 3,
++    Progress = 4,
++    Tracing = 5
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementKind.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementKind.cs
+new file mode 100644
+index 000000000..12ef20a5d
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementKind.cs
+@@ -0,0 +1,7 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementKind
++{
++    General = 0,
++    Racial = 1
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLevelCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLevelCategory.cs
+new file mode 100644
+index 000000000..9a54afd2e
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLevelCategory.cs
+@@ -0,0 +1,17 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementLevelCategory
++{
++    Invalid = 0,
++    Level_1_5 = 1,
++    Level_6_10 = 2,
++    Level_11_15 = 3,
++    Level_16_20 = 4,
++    Level_21_25 = 5,
++    Level_26_30 = 6,
++    Level_31_35 = 7,
++    Level_36_40 = 8,
++    Level_41_45 = 9,
++    Level_46_50 = 10,
++    Level_51_55 = 11
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLifeCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLifeCategory.cs
+new file mode 100644
+index 000000000..ac2bd8780
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementLifeCategory.cs
+@@ -0,0 +1,11 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementLifeCategory
++{
++    Invalid = 0,
++    Make = 1,
++    AnimalHusbandry = 2,
++    Trade = 3,
++    Furniture = 4,
++    Goal = 5
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementNormalCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementNormalCategory.cs
+new file mode 100644
+index 000000000..0258d1a42
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementNormalCategory.cs
+@@ -0,0 +1,10 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementNormalCategory
++{
++    Invalid = 0,
++    Character = 1,
++    Pet = 2,
++    Collect = 3,
++    Etc = 4
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSeasonCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSeasonCategory.cs
+new file mode 100644
+index 000000000..80c2d1a49
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSeasonCategory.cs
+@@ -0,0 +1,10 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementSeasonCategory
++{
++    Invalid = 0,
++    Spring = 1,
++    Summer = 2,
++    Autumn = 3,
++    Winter = 4
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSocietyCategory.cs b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSocietyCategory.cs
+new file mode 100644
+index 000000000..51af5079f
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/AchievementSocietyCategory.cs
+@@ -0,0 +1,9 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum AchievementSocietyCategory
++{
++    Invalid = 0,
++    Crime = 1,
++    Relation = 2,
++    Npc = 3
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/CharRecordKind.cs b/AAEmu.Game/Models/Game/Achievement/Enums/CharRecordKind.cs
+new file mode 100644
+index 000000000..2b70843ff
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/CharRecordKind.cs
+@@ -0,0 +1,81 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum CharRecordKind
++{
++    PvpKillEnemy = 1,
++    PvpKillHonorWar = 2,
++    PvpKillSiege = 3,
++    PvpKillAlly = 4,
++    PvpDeathEnemy = 5,
++    PvpDeathHonorWar = 6,
++    PvpDeathSiege = 7,
++    PvpDeathAlly = 8,
++    CompleteAchievement = 9,
++    CharLevel = 10,
++    PetLevel = 11,
++    PlayTime = 12,
++    WinZoneBattle = 13,
++    MyGold = 14,
++    SpendGold = 15,
++    ChangeLook = 16,
++    GetLifePoint = 17,
++    GetActability = 18,
++    GetHonorPoint = 19,
++    SpendLabor = 20,
++    AbilityLevel = 21,
++    AbilityChange = 22,
++    DeadByPvp = 23,
++    DeadByNpc = 24,
++    KillNpc = 25,
++    KillSlave = 26,
++    CompleteQuestCategory = 27,
++    CompleteQuestType = 28,
++    GetItemType = 29,
++    MakeItemType = 30,
++    GetItemImpl = 31,
++    MakeItemImpl = 32,
++    GetLootpack = 33,
++    GetLootitem = 34,
++    UseItem = 35,
++    ItemFix = 36,
++    SellItem = 37,
++    MakeHousing = 38,
++    AuctionBuy = 39,
++    AuctionSold = 40,
++    UseSkill = 41,
++    GetJuryPoint = 42,
++    ReportCrime = 43,
++    Judgement = 44,
++    WinDuel = 45,
++    KillWanted = 46,
++    NpcEmotion = 47,
++    GetFaction = 48,
++    MyDishonorablePoint = 49,
++    EnchantItem = 50,
++    EnchantFailure = 51,
++    EnrollParty = 52,
++    EnrollRaidGroup = 53,
++    EnrollFamily = 54,
++    EnrollGuild = 55,
++    EnrollNation = 56,
++    WinAttackSiege = 57,
++    WinDefenceSiege = 58,
++    LoseAttackSiege = 59,
++    LoseDefenceSiege = 60,
++    TopGearScore = 61,
++    BeHero = 62,
++    BeHeroGrade = 63,
++    GetLeadership = 64,
++    HeroVote = 65,
++    GetReputation = 66,
++    SetReputation = 67,
++    RebuildHousing = 68,
++    UseMobilizationOrder = 69,
++    IncreasedFavoritePortalLimit = 70,
++    BattleFieldWin = 71,
++    BattleFieldLose = 72,
++    BattleFieldDraw = 73,
++    BattleFieldKill = 74,
++    BattleFieldDeath = 75,
++    BattleFieldAssist = 76
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/Enums/RewardItemReason.cs b/AAEmu.Game/Models/Game/Achievement/Enums/RewardItemReason.cs
+new file mode 100644
+index 000000000..d25db0b30
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/Enums/RewardItemReason.cs
+@@ -0,0 +1,10 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement.Enums;
++
++public enum RewardItemReason
++{
++    None = 0,
++    AccountAttendance = 1,
++    Achievement = 2,
++    TodayAssignmentGoal = 3,
++    SiegeAuction = 4
++}
+diff --git a/AAEmu.Game/Models/Game/Achievement/PreCompletedAchievements.cs b/AAEmu.Game/Models/Game/Achievement/PreCompletedAchievements.cs
+new file mode 100644
+index 000000000..b9fe1ae6c
+--- /dev/null
++++ b/AAEmu.Game/Models/Game/Achievement/PreCompletedAchievements.cs
+@@ -0,0 +1,9 @@
++﻿namespace AAEmu.Game.Models.Game.Achievement
++{
++    public partial class PreCompletedAchievements
++    {
++        public uint Id { get; set; }
++        public uint CompletedAchievementId { get; set; }
++        public uint MyAchievementId { get; set; }
++    }
++}
