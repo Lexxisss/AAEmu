@@ -1,36 +1,22 @@
-From fe3b318a34299ddf74ec4edadff32a3627189a35 Mon Sep 17 00:00:00 2001
+From e0b54ea190c0a8a3eeb6866d942320707c8d9060 Mon Sep 17 00:00:00 2001
 From: Yanlongli <ahlyl94@gmail.com>
-Date: Fri, 16 Aug 2024 13:34:51 +0800
-Subject: [PATCH] [Game] Check recipients when sending mails (#1080)
+Date: Fri, 16 Aug 2024 15:06:18 +0800
+Subject: [PATCH] [Game] Fix height acquisition error
 
 ---
- AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs | 9 +++++++++
- 1 file changed, 9 insertions(+)
+ AAEmu.Game/Models/Game/Units/Route/Simulation.cs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
-index 12a42d6fb..d667fb7a4 100644
---- a/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
-+++ b/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
-@@ -2,6 +2,8 @@
- using System.Linq;
+diff --git a/AAEmu.Game/Models/Game/Units/Route/Simulation.cs b/AAEmu.Game/Models/Game/Units/Route/Simulation.cs
+index 3820995b1..35bf1b08f 100644
+--- a/AAEmu.Game/Models/Game/Units/Route/Simulation.cs
++++ b/AAEmu.Game/Models/Game/Units/Route/Simulation.cs
+@@ -395,7 +395,7 @@ public void MoveTo(Simulation sim, Npc npc, Vector3 target)
+             // TODO: Implement proper use for Transform.World.AddDistanceToFront)
+             var (newX, newY, _) = PositionAndRotation.AddDistanceToFront(travelDist, targetDist, npc.Transform.Local.Position, target);
  
- using AAEmu.Commons.Network;
-+using AAEmu.Game.Core.Managers;
-+using AAEmu.Game.Core.Managers.UnitManagers;
- using AAEmu.Game.Core.Managers.World;
- using AAEmu.Game.Core.Network.Game;
- using AAEmu.Game.Models.Game;
-@@ -47,6 +49,13 @@ public override void Read(PacketStream stream)
- 
-         // Validate if we are near a MailBox
-         bool mailCheckOK;
-+
-+        if (string.IsNullOrWhiteSpace(receiverCharName) || NameManager.Instance.GetCharacterId(receiverCharName) == 0)
-+        {
-+            Connection.ActiveChar.SendErrorMessage(ErrorMessageType.MailReceiverNotFound);
-+            return;
-+        }
-+        
-         if (doodad != null)
-         {
-             // Cannot rely on doodad GroupID being "Other - Mailboxes (6)", as some of the mailboxes belong to other groups (e.g. "Housing - Furniture").
+-            var newZ = WorldManager.Instance.GetHeight(npc.Transform.ZoneId, npc.Transform.World.Position.X, npc.Transform.World.Position.Z);
++            var newZ = WorldManager.Instance.GetHeight(npc.Transform.ZoneId, npc.Transform.World.Position.X, npc.Transform.World.Position.Y);
+             if (newZ == 0)
+             {
+                 newZ = npc.Transform.World.Position.Z;
