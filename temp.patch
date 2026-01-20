@@ -1,108 +1,87 @@
-From 2ae7a2397287a597e82c59a0e62658a494610c98 Mon Sep 17 00:00:00 2001
-From: ZeromusXYZ <zeromus.xyz@gmail.com>
-Date: Wed, 14 Aug 2024 09:54:14 +0200
-Subject: [PATCH] [Game] Additional checks for trades (#1077)
+From 791ea9e6ac17d8756f32fa4117b15703d1a3e8c6 Mon Sep 17 00:00:00 2001
+From: Donella Kreiger <ahlyl94@gmail.com>
+Date: Wed, 14 Aug 2024 16:38:54 +0800
+Subject: [PATCH] [Game] When a character is level change or a zone change
+ occurs, update the information in the expedition team. (#1078)
 
-- Added a check to the player trades that checks if the players actually have the amount of money they claim to put up for trade. Cancels the trade if either of them does not.
-- Added additional warnings when trying to trade items that should not be able to be traded.
 ---
- AAEmu.Game/Core/Managers/TradeManager.cs | 65 +++++++++++++++---------
- 1 file changed, 40 insertions(+), 25 deletions(-)
+ AAEmu.Game/Core/Managers/ExpeditionManager.cs          | 1 +
+ AAEmu.Game/Models/Game/Char/Character.cs               | 3 +++
+ AAEmu.Game/Models/Game/Expeditions/Expedition.cs       | 9 +++++++++
+ AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs | 5 ++++-
+ 4 files changed, 17 insertions(+), 1 deletion(-)
 
-diff --git a/AAEmu.Game/Core/Managers/TradeManager.cs b/AAEmu.Game/Core/Managers/TradeManager.cs
-index 643cad0eee..d39a29b48d 100644
---- a/AAEmu.Game/Core/Managers/TradeManager.cs
-+++ b/AAEmu.Game/Core/Managers/TradeManager.cs
-@@ -319,16 +319,24 @@ public void FinishTrade(Character owner, Character target, uint tradeId)
-     {
-         var tradeInfo = _trades[tradeId];
+diff --git a/AAEmu.Game/Core/Managers/ExpeditionManager.cs b/AAEmu.Game/Core/Managers/ExpeditionManager.cs
+index f5564eac83..d0166f8c1c 100644
+--- a/AAEmu.Game/Core/Managers/ExpeditionManager.cs
++++ b/AAEmu.Game/Core/Managers/ExpeditionManager.cs
+@@ -663,6 +663,7 @@ public static ExpeditionMember GetMemberFromCharacter(uint characterId)
+         member.Abilities = [(byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3];
+         member.ExpeditionId = expedition.Id;
+         member.CharacterId = character.Id;
++        member.LastWorldLeaveTime = DateTime.UtcNow;
  
--        // TODO: check if this actually works correctly with the items-rewrite with the way packets are handled
--
--        /*
--         * TODO -
--         * try catch
--         * check if bound
--         * check untradable
--         */
-+        // Validate Money (custom client protection)
-+        if (tradeInfo.OwnerMoneyPutup > owner.Money)
-+        {
-+            CancelTrade(owner.ObjId, 0, tradeId); // Reason?
-+            Logger.Error($"{owner.Name} ({owner.Id}) is putting up more money for trade than have {tradeInfo.OwnerMoneyPutup} > {owner.Money}, possible exploit or modified client!");
-+            return;
-+        }
-+        if (tradeInfo.TargetMoneyPutup > target.Money)
-+        {
-+            CancelTrade(target.ObjId, 0, tradeId); // Reason?
-+            Logger.Error($"{target.Name} ({target.Id}) is putting up more money for trade than have {tradeInfo.TargetMoneyPutup} > {target.Money}, possible exploit or modified client!");
-+            return;
-+        }
-+
-+        var hasErrors = 0;
-         var tasksOwner = new List<ItemTask>();
-         var tasksTarget = new List<ItemTask>();
-+
-         // Handle Money from Owner
-         if (tradeInfo.OwnerMoneyPutup > 0)
-         {
-@@ -352,13 +360,15 @@ public void FinishTrade(Character owner, Character target, uint tradeId)
-         {
-             foreach (var item in tradeInfo.OwnerItems)
-             {
--                target.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, item);
--                //owner.Inventory.RemoveItem(item, false);
--                tasksOwner.Add(new ItemRemove(item));
--                //item.Slot = -1;
--                //var newItem = target.Inventory.AddItem(item);
--                //tasksTarget.Add(new ItemAdd(newItem));
--                tasksTarget.Add(new ItemAdd(item));
-+                if (target.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, item))
-+                {
-+                    tasksOwner.Add(new ItemRemove(item));
-+                    tasksTarget.Add(new ItemAdd(item));
-+                }
-+                else
-+                {
-+                    hasErrors++;
-+                }
-             }
-         }
-         // Handle Items from Target
-@@ -366,21 +376,26 @@ public void FinishTrade(Character owner, Character target, uint tradeId)
-         {
-             foreach (var item in tradeInfo.TargetItems)
-             {
--                owner.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, item);
--                //target.Inventory.RemoveItem(item, false);
--                tasksTarget.Add(new ItemRemove(item));
--                //item.Slot = -1;
--                //var newItem = owner.Inventory.AddItem(item);
--                // tasksOwner.Add(new ItemAdd(newItem));
--                tasksOwner.Add(new ItemAdd(item));
-+                if (owner.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, item))
-+                {
-+                    tasksTarget.Add(new ItemRemove(item));
-+                    tasksOwner.Add(new ItemAdd(item));
-+                }
-+                else
-+                {
-+                    hasErrors++;
-+                }
-             }
-         }
- 
-+        // Trade complete, remove ID and send item task packets
-         _trades.Remove(tradeId);
-         owner.SendPacket(new SCTradeMadePacket(ItemTaskType.Trade, tasksOwner, new List<ulong>()));
-         target.SendPacket(new SCTradeMadePacket(ItemTaskType.Trade, tasksTarget, new List<ulong>()));
--        Logger.Info($"Trade Id:{tradeId} finished." +
--                    $" Owner Items/Money: {tradeInfo.OwnerItems.Count}/{tradeInfo.OwnerMoneyPutup}." +
--                    $" Target Items/Money: {tradeInfo.TargetItems.Count}/{tradeInfo.TargetMoneyPutup}");
-+        Logger.Info($"Trade Id:{tradeId} finished. Owner {owner.Name} ({owner.Id}) Items/Money: {tradeInfo.OwnerItems.Count}/{tradeInfo.OwnerMoneyPutup} <=> Target {target.Name} ({target.Id}) Items/Money: {tradeInfo.TargetItems.Count}/{tradeInfo.TargetMoneyPutup}");
-+        if (hasErrors > 0)
-+        {
-+            Logger.Error($"{hasErrors}item(s) could not be trade for tradeId: {tradeId} between {owner.Name} ({owner.Id}) and {target.Name} ({target.Id}), possible exploit or modified client!");
-+        }
+         return member;
      }
+diff --git a/AAEmu.Game/Models/Game/Char/Character.cs b/AAEmu.Game/Models/Game/Char/Character.cs
+index 0d7499b47d..9df9ffb3bd 100644
+--- a/AAEmu.Game/Models/Game/Char/Character.cs
++++ b/AAEmu.Game/Models/Game/Char/Character.cs
+@@ -1357,6 +1357,7 @@ public void CheckLevelUp()
+             change = true;
+             Level++;
+             needExp = ExperienceManager.Instance.GetExpForLevel((byte)(Level + 1));
++            Expedition?.OnCharacterRefresh(this);
+         }
+ 
+         if (change)
+@@ -1377,6 +1378,7 @@ public void CheckExp()
+         {
+             Level++;
+             needExp = ExperienceManager.Instance.GetExpForLevel((byte)(Level + 1));
++            Expedition?.OnCharacterRefresh(this);
+         }
+     }
+ 
+@@ -1577,6 +1579,7 @@ public void OnZoneChange(uint lastZoneKey, uint newZoneKey)
+         }
+         if (newZone != null)
+         {
++            Expedition?.OnCharacterRefresh(this);
+             // Apply the new zone buff if needed
+             var newZoneGroup = ZoneManager.Instance.GetZoneGroupById(newZone.GroupId);
+             if ((newZoneGroup != null) && (newZoneGroup.BuffId != 0))
+diff --git a/AAEmu.Game/Models/Game/Expeditions/Expedition.cs b/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
+index 0046e34b49..cc4b371e83 100644
+--- a/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
++++ b/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
+@@ -269,4 +269,13 @@ public PacketStream WriteInfo(PacketStream stream)
+         stream.Write(0u);                // type
+         return stream;
+     }
++
++    public void OnCharacterRefresh(Character character)
++    {
++        var member = GetMember(character);
++        if (member == null)
++            return;
++        member.Refresh(character);
++        SendPacket(new SCExpeditionMemberStatusChangedPacket(member, 0));
++    }
  }
+diff --git a/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs b/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
+index d30741e19d..8b045df8e4 100644
+--- a/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
++++ b/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
+@@ -38,7 +38,10 @@ public void Refresh(Character character)
+         InParty = character.InParty;
+         Position = character.Transform.World.Position;
+         ZoneId = character.Transform.ZoneId;
+-        Abilities = [(byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3];
++        Abilities = new[] { (byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3 };
++        Level = character.Level;
++        Name = character.Name;
++        LastWorldLeaveTime = DateTime.UtcNow;
+     }
+ 
+     public void Save(MySqlConnection connection, MySqlTransaction transaction)
