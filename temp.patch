@@ -1,734 +1,996 @@
-From 1cf3d02442aebae348904996cda881cc37e17483 Mon Sep 17 00:00:00 2001
-From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Sat, 27 Jul 2024 22:50:36 +0300
-Subject: [PATCH] Merge errors fixed;
+From 21d41a80e5a6a30ea3022c136d0d3dee3dd818b7 Mon Sep 17 00:00:00 2001
+From: ZeromusXYZ <zeromus.xyz@gmail.com>
+Date: Sun, 28 Jul 2024 13:41:56 +0200
+Subject: [PATCH] [Game] Looting related fixed (#1051)
 
+* [Game] Fixed fishing loot not stacking
+
+- Fixed the issue where small fish of higher grades would not stack.
+- Added free space check on ``DoodadFuncLootItem`` to prevent crashes when bag is full
+- Added some comments to unimplemented SC packet offsets
+
+* [Game] Removed warning log for invalid zone faction
+
+- Removed the null zone faction warning as some of the unreleased zones where using a non-existing faction Id which resulted in log spam.
+
+* [Game] Fixed crash when looting with a full inventory
+
+- Changed how ``UpdateFreeSlotCount`` calculates free slots.
+- Added Bag size check to ``CSLootItemPacket``
+
+* [Game] Code cleaning ItemContainer.cs
 ---
- .../Core/Packets/G2C/SCUnitStatePacket.cs     |   7 +-
- .../Data/Worlds/main_world/npc_spawns.json    |   6 +
- .../AI/v2/Behaviors/BaseCombatBehavior.cs     | 172 +-----------------
- .../AI/v2/Behaviors/Common/AlertBehavior.cs   |   4 +-
- .../Common/AlmightyAttackBehavior.cs          |   7 +-
- .../AI/v2/Behaviors/Common/AttackBehavior.cs  |  17 +-
- .../AI/v2/Behaviors/Common/DummyBehavior.cs   |   1 +
- .../v2/Behaviors/Common/FollowPathBehavior.cs |   5 +-
- .../v2/Behaviors/Common/FollowUnitBehavior.cs |   5 +-
- .../Behaviors/Common/HoldPositionBehavior.cs  |   2 -
- .../Behaviors/Common/ReturnStateBehavior.cs   |   4 +-
- .../AI/v2/Behaviors/Common/RoamingBehavior.cs |   2 -
- .../Behaviors/Common/RunCommandSetBehavior.cs |   8 +-
- .../Models/Game/AI/v2/Framework/Behavior.cs   |  88 +++++++--
- .../Models/Game/AI/v2/Framework/NpcAi.cs      |  12 +-
- 15 files changed, 122 insertions(+), 218 deletions(-)
+ .../Core/Packets/C2G/CSLootItemPacket.cs      |   7 +
+ .../DoodadObj/Funcs/DoodadFuncLootItem.cs     |  20 +-
+ .../Game/Items/Containers/ItemContainer.cs    | 329 ++++++++++++------
+ .../Models/Game/Items/Loots/LootPack.cs       |  40 ++-
+ .../Effects/SpecialEffects/FishingLoot.cs     |   6 +-
+ AAEmu.Game/Models/Game/Units/BaseUnit.cs      |   3 +-
+ 6 files changed, 277 insertions(+), 128 deletions(-)
 
-diff --git a/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs b/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-index afa34c23d9..7acdcf41b4 100644
---- a/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-+++ b/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-@@ -27,6 +27,7 @@ public class SCUnitStatePacket : GamePacket
-     public SCUnitStatePacket(Unit unit) : base(SCOffsets.SCUnitStatePacket, 5)
-     {
-         _unit = unit;
-+        _modelPostureType = unit.ModelPostureType;
-         switch (_unit)
+diff --git a/AAEmu.Game/Core/Packets/C2G/CSLootItemPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSLootItemPacket.cs
+index 1467ab2700..61a5c8d4d6 100644
+--- a/AAEmu.Game/Core/Packets/C2G/CSLootItemPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSLootItemPacket.cs
+@@ -2,6 +2,7 @@
+ using AAEmu.Game.Core.Managers;
+ using AAEmu.Game.Core.Network.Game;
+ using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models.Game;
+ 
+ namespace AAEmu.Game.Core.Packets.C2G;
+ 
+@@ -23,6 +24,12 @@ public override void Read(PacketStream stream)
+         var lootDropItem = lootDropItems.Find(a => a.Id == iid);
+         if (lootDropItem != null)
          {
-             case Character:
-@@ -35,7 +36,7 @@ public SCUnitStatePacket(Unit unit) : base(SCOffsets.SCUnitStatePacket, 5)
-                 break;
-             case Npc npc:
-                 _baseUnitType = BaseUnitType.Npc;
--                _modelPostureType = npc.Template.AnimActionId > 0 ? ModelPostureType.ActorModelState : ModelPostureType.None;
-+                _modelPostureType = npc.AnimActionId > 0 ? ModelPostureType.ActorModelState : ModelPostureType.None;
-                 break;
-             case Slave:
-                 _baseUnitType = BaseUnitType.Slave;
-@@ -81,7 +82,7 @@ public override PacketStream Write(PacketStream stream)
-             case BaseUnitType.Npc:
-                 stream.WriteBc(npc.ObjId);    // objId
-                 stream.Write(npc.TemplateId); // npc templateId
--                stream.Write(0u);             // type(id)
-+                stream.Write(0);              // type(id) (ownerId?)
-                 stream.Write((byte)0);        // clientDriven
-                 break;
-             case BaseUnitType.Slave:
-@@ -218,7 +219,7 @@ public override PacketStream Write(PacketStream stream)
- 
-         #region UnitModelPosture
- 
--        Unit.ModelPosture(stream, _unit, _baseUnitType, _modelPostureType);
-+        Unit.ModelPosture(stream, _unit, (_unit as Npc)?.AnimActionId ?? 0, true);
- 
-         #endregion
- 
-diff --git a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-index ae4eb2d383..145b844e57 100644
---- a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-+++ b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-@@ -23520,6 +23520,7 @@
-     "Id": 0,
-     "UnitId": 987,
-     "Title": "Bull Elephant",
-+    "FollowPath": "windscour_bull_elephant_1",
-     "Position": {
-       "X": 25909.29,
-       "Y": 6562.38,
-@@ -28954,6 +28955,7 @@
-     "Id": 0,
-     "UnitId": 8930,
-     "Title": "Bonehoarder Tracker",
-+    "FollowNpc": 987,
-     "Position": {
-       "X": 25909.99,
-       "Y": 6453.66,
-@@ -28967,6 +28969,7 @@
-     "Id": 0,
-     "UnitId": 8930,
-     "Title": "Bonehoarder Tracker",
-+    "FollowNpc": 987,
-     "Position": {
-       "X": 25818.98,
-       "Y": 6517.85,
-@@ -28993,6 +28996,7 @@
-     "Id": 0,
-     "UnitId": 8930,
-     "Title": "Bonehoarder Tracker",
-+    "FollowNpc": 987,
-     "Position": {
-       "X": 25909.29,
-       "Y": 6562.38,
-@@ -29019,6 +29023,7 @@
-     "Id": 0,
-     "UnitId": 8930,
-     "Title": "Bonehoarder Tracker",
-+    "FollowNpc": 987,
-     "Position": {
-       "X": 25833.54,
-       "Y": 6372.93,
-@@ -29045,6 +29050,7 @@
-     "Id": 0,
-     "UnitId": 8930,
-     "Title": "Bonehoarder Tracker",
-+    "FollowNpc": 987,
-     "Position": {
-       "X": 25901.06,
-       "Y": 6604.39,
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
-index edfe63c3e3..2288266a0e 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
-@@ -1,4 +1,4 @@
--﻿using System;
-+﻿﻿using System;
- using System.Collections.Generic;
- using System.Diagnostics;
- using System.Linq;
-@@ -11,11 +11,8 @@
- using AAEmu.Game.Models.Game.AI.v2.Framework;
- using AAEmu.Game.Models.Game.AI.v2.Params;
- using AAEmu.Game.Models.Game.AI.v2.Params.Almighty;
--using AAEmu.Game.Models.Game.Items.Templates;
--using AAEmu.Game.Models.Game.NPChar;
- using AAEmu.Game.Models.Game.Skills;
- using AAEmu.Game.Models.Game.Skills.SkillControllers;
--using AAEmu.Game.Models.Game.Skills.Static;
- using AAEmu.Game.Models.Game.Units;
- using AAEmu.Game.Utils;
- 
-@@ -30,8 +27,6 @@ public abstract class BaseCombatBehavior : Behavior
-     protected Queue<AiSkill> _skillQueue;
-     private bool _startingSkillAlreadyUsed;
- 
--    protected const int Delay = 350;
--
-     public void MoveInRange(BaseUnit target, TimeSpan delta)
-     {
-         if (Ai?.Owner == null)
-@@ -276,8 +271,7 @@ protected void CheckPipeName()
-         {
-             // try to find Z first in GeoData, and then in HeightMaps, if not found, leave Z as it is
-             var updZ = WorldManager.Instance.GetHeight(Ai.Owner.Transform.ZoneId, Ai.Owner.Transform.Local.Position.X, Ai.Owner.Transform.Local.Position.Y);
--            if (updZ != 0)
--                Ai.Owner.Transform.Local.SetHeight(updZ);
-+            Ai.Owner.Transform.Local.SetHeight(updZ);
++            var freeSpace = Connection.ActiveChar.Inventory.Bag.SpaceLeftForItem(lootDropItem, out _); 
++            if (freeSpace < lootDropItem.Count)
++            {
++                Connection.ActiveChar.SendErrorMessage(ErrorMessageType.BagFull);
++                return;
++            }
+             ItemManager.Instance.TookLootDropItem(Connection.ActiveChar, lootDropItems, lootDropItem, count);
          }
-         else if (_pipeName == "phase_dragon_fly_hovering" || _phaseType == 2) // "PHASE_DRAGON_HOVERING = 2;"
+         else
+diff --git a/AAEmu.Game/Models/Game/DoodadObj/Funcs/DoodadFuncLootItem.cs b/AAEmu.Game/Models/Game/DoodadObj/Funcs/DoodadFuncLootItem.cs
+index b2f52d827a..c4e2fdc28f 100644
+--- a/AAEmu.Game/Models/Game/DoodadObj/Funcs/DoodadFuncLootItem.cs
++++ b/AAEmu.Game/Models/Game/DoodadObj/Funcs/DoodadFuncLootItem.cs
+@@ -43,17 +43,21 @@ public override void Use(BaseUnit caster, Doodad owner, uint skillId, int nextPh
+             character.Money += count;
+             res = character.AddMoney(SlotType.Inventory, count);
+         }
+-        else if (ItemManager.Instance.IsAutoEquipTradePack(ItemId))
++        else
          {
-@@ -447,166 +441,4 @@ private List<SkillList> RequestAvailableSkillList(List<SkillList> skillLists)
+-            var item = ItemManager.Instance.Create(ItemId, count, 0);
+-            if (character.Inventory.TakeoffBackpack(ItemTaskType.RecoverDoodadItem, true))
++            if (ItemManager.Instance.IsAutoEquipTradePack(ItemId))
+             {
+-                res = character.Inventory.Equipment.AddOrMoveExistingItem(ItemTaskType.RecoverDoodadItem, item, (int)Items.EquipmentItemSlot.Backpack);
++                var item = ItemManager.Instance.Create(ItemId, count, 0);
++                if (character.Inventory.TakeoffBackpack(ItemTaskType.RecoverDoodadItem, true))
++                {
++                    res = character.Inventory.Equipment.AddOrMoveExistingItem(ItemTaskType.RecoverDoodadItem, item,
++                        (int)Items.EquipmentItemSlot.Backpack);
++                }
++            }
++            else
++            {
++                res = character.Inventory.Bag.AcquireDefaultItem(ItemTaskType.RecoverDoodadItem, ItemId, count);
+             }
+-        }
+-        else
+-        {
+-            res = character.Inventory.Bag.AcquireDefaultItem(ItemTaskType.RecoverDoodadItem, ItemId, count);
+         }
  
-         return availableSkillLists;
+         if (res == false)
+diff --git a/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
+index 9ef755ecff..6b1f0cb87a 100644
+--- a/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
++++ b/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
+@@ -25,15 +25,18 @@ public class ItemContainer
+     private ICharacter _owner;
+     private uint _ownerId;
+     public bool IsDirty { get; set; }
+-    private SlotType _containerType;
++    private readonly SlotType _containerType;
+     private ulong _containerId;
+ 
+     public ICharacter Owner
+     {
+         get
+         {
+-            if ((_owner == null) && (_ownerId > 0))
++            if (_owner == null && _ownerId > 0)
++            {
+                 _owner = WorldManager.Instance.GetCharacterById(_ownerId);
++            }
++
+             return _owner;
+         }
+         set
+@@ -49,21 +52,16 @@ public ICharacter Owner
+ 
+     public uint OwnerId
+     {
+-        get
+-        {
+-            if (_owner != null)
+-                return _owner.Id;
+-            else
+-                return _ownerId;
+-        }
+-        set
++        get => _owner?.Id ?? _ownerId;
++        private init
+         {
+             if (value != _ownerId)
+             {
+                 _ownerId = value;
+                 IsDirty = true;
+             }
+-            _owner = null; // this will make it so it'll try to fetch on the next query
++
++            _owner = null; // this will make it so that it will try to fetch on the next query
+         }
      }
--
--    public SkillResult PickSkillAndUseIt(SkillUseConditionKind kind, BaseUnit target, float targetDist)
+ 
+@@ -72,7 +70,7 @@ public uint OwnerId
+     public SlotType ContainerType
+     {
+         get => _containerType;
+-        set
++        private init
+         {
+             if (value != _containerType)
+             {
+@@ -119,10 +117,7 @@ public bool PartOfPlayerInventory
+ 
+     public int ContainerSize
+     {
+-        get
+-        {
+-            return _containerSize;
+-        }
++        get => _containerSize;
+         set
+         {
+             if (value != _containerSize)
+@@ -130,16 +125,12 @@ public int ContainerSize
+                 _containerSize = value;
+                 IsDirty = true;
+             }
++
+             UpdateFreeSlotCount();
+         }
+     }
+-    public int FreeSlotCount
 -    {
--        var res = SkillResult.InvalidSkill;
--        // Attack behavior probably only uses base skill ?
--        var skills = new List<NpcSkill>();
--        if (Ai.Owner.Template.Skills.TryGetValue(kind, out var templateSkill))
+-        get
 -        {
--            skills = templateSkill;
+-            return _freeSlotCount;
 -        }
--        if (skills.Count > 0)
--        {
--            skills = skills
--                .Where(s => !Ai.Owner.Cooldowns.CheckCooldown(s.SkillId))
--                .Where(s =>
--                {
--                    var template = SkillManager.Instance.GetSkillTemplate(s.SkillId);
--                    return template != null && (targetDist >= template.MinRange && targetDist <= template.MaxRange || template.TargetType == SkillTargetType.Self);
--                }).ToList();
--        }
--
--        if (targetDist == 0 && kind == SkillUseConditionKind.InIdle)
--        {
--            // This SkillTargetType.Self & SkillUseConditionKind.InIdle
--            if (skills.Count <= 0)
--            {
--                return res;
--            }
--            var skillSelfId = skills[Rand.Next(skills.Count)].SkillId;
--            var skillTemplateSelf = SkillManager.Instance.GetSkillTemplate(skillSelfId);
--            var skillSelf = new Skill(skillTemplateSelf);
--
--            var delay1 = (int)(Ai.Owner.Template.BaseSkillDelay * 1000);
--            if (Ai.Owner.Template.BaseSkillDelay == 0)
--            {
--                const uint Delay1 = 10000u;
--                const uint Delay2 = 13000u;
--                delay1 = (int)Rand.Next(Delay1, Delay2);
--            }
--
--            if (this.CheckInterval(delay1))
--            {
--                Logger.Trace("PickSkillAndUseIt:UseSelfSkill Owner.ObjId {0}, Owner.TemplateId {1}, SkillId {2}", Ai.Owner.ObjId, Ai.Owner.TemplateId, skillTemplateSelf.Id);
--                res = UseSkill(skillSelf, target);
--            }
--            return res;
--        }
--
--        // This SkillUseConditionKind.InCombat
--        var pickedSkillId = (uint)Ai.Owner.Template.BaseSkillId;
--        if (skills.Count > 0)
--        {
--            pickedSkillId = skills[Rand.Next(skills.Count)].SkillId;
--        }
--
--        // Hackfix for Melee attack. Needs to look at the held weapon (if any) or default to 3m
--        if (pickedSkillId == 2 && targetDist > 4.0f)
--        {
--            return SkillResult.TooFarRange;
--        }
--        var skillTemplate = SkillManager.Instance.GetSkillTemplate(pickedSkillId);
--        var skill = new Skill(skillTemplate);
--
--        SetMaxWeaponRange(skill, target); // установим максимальную дистанцию для атаки скиллом
--
--        var delay2 = (int)(Ai.Owner.Template.BaseSkillDelay * 1000);
--        if (Ai.Owner.Template.BaseSkillDelay == 0)
--        {
--            const uint Delay1 = 1500u;
--            const uint Delay2 = 1550u;
--            delay2 = (int)Rand.Next(Delay1, Delay2);
--        }
--
--        if (this.CheckInterval(delay2))
--        {
--            Logger.Trace("PickSkillAndUseIt:UseSkill Owner.ObjId {0}, Owner.TemplateId {1}, SkillId {2} on Target {3}", Ai.Owner.ObjId, Ai.Owner.TemplateId, skillTemplate.Id, target.ObjId);
--            res = UseSkill(skill, target);
--        }
--
--        return res;
 -    }
--
--    /// <summary>
--    /// Use a skill
--    /// </summary>
--    /// <param name="skill">Skill object to use</param>
--    /// <param name="target">Target Unit</param>
--    /// <param name="delay">Delay (in seconds) after this skill is used before the next one is allowed</param>
--    /// <returns>Skill result of the used skill</returns>
--    public SkillResult UseSkill(Skill skill, BaseUnit target, float delay = 0)
--    {
--        if (target == null)
--        {
--            return SkillResult.NoTarget;
--        }
--
--        if (skill == null)
--        {
--            return SkillResult.Failure;
--        }
--
--        if (Ai.Owner.Cooldowns.CheckCooldown(skill.Id))
--        {
--            return SkillResult.CooldownTime;
--        }
--
--        var targetDist = Ai.Owner.GetDistanceTo(target);
--        if (targetDist < skill.Template.MinRange)
--        {
--            return SkillResult.TooCloseRange;
--        }
--
--        if (targetDist > skill.Template.MaxRange)
--        {
--            return SkillResult.TooFarRange;
--        }
--
--        _nextTimeToDelay = delay;
--        var skillCaster = SkillCaster.GetByType(SkillCasterType.Unit);
--        skillCaster.ObjId = Ai.Owner.ObjId;
--
--        SkillCastTarget skillCastTarget;
--        switch (skill.Template.TargetType)
--        {
--            case SkillTargetType.Pos:
--                var pos = Ai.Owner.Transform.World.Position;
--                skillCastTarget = new SkillCastPositionTarget()
--                {
--                    ObjId = Ai.Owner.ObjId,
--                    PosX = pos.X,
--                    PosY = pos.Y,
--                    PosZ = pos.Z,
--                    PosRot = Ai.Owner.Transform.World.ToRollPitchYawDegrees().Z // (float)MathUtil.ConvertDirectionToDegree(pos.RotationZ) //Is this rotation right?
--                };
--                break;
--            default:
--                skillCastTarget = SkillCastTarget.GetByType(SkillCastTargetType.Unit);
--                skillCastTarget.ObjId = target.ObjId;
--                break;
--        }
--
--        var skillObject = SkillObject.GetByType(SkillObjectType.None);
--
--        skill.Callback = OnSkillEnded;
--        var result = skill.Use(Ai.Owner, skillCaster, skillCastTarget, skillObject, false, out _);
--        // fix the eastward turn when using SelfSkill
--        if (skill.Template.TargetType != SkillTargetType.Self && result == SkillResult.Success)
--            Ai.Owner.LookTowards(target.Transform.World.Position);
--        return result;
--    }
--
--    public virtual void OnSkillEnded()
--    {
++
++    public int FreeSlotCount => _freeSlotCount;
+ 
+     protected ItemContainer()
+     {
+@@ -157,7 +148,9 @@ public ItemContainer(uint ownerId, SlotType containerType, bool createWithNewId)
+         Items = new List<Item>();
+         ContainerSize = -1; // Unlimited
+         if (createWithNewId)
++        {
+             ContainerId = ContainerIdManager.Instance.GetNextId();
++        }
+     }
+ 
+     public void ReNumberSlots(bool reverse = false)
+@@ -178,47 +171,15 @@ public void UpdateFreeSlotCount()
+             return;
+         }
+ 
 -        try
 -        {
--            _delayEnd = DateTime.UtcNow.AddSeconds(_nextTimeToDelay);
+-            Items.Sort();
+-            var usedSlots = new List<int>();
+-            foreach (var item in Items)
+-            {
+-                if (item == null)
+-                {
+-                    Logger.Warn($"Null Item Slot");
+-                    continue;
+-                }
+-                if (item.Slot <= 0)
+-                    continue;
+-                //if (usedSlots.Contains(item.Slot))
+-                //    Logger.Warn($"Duplicate Item Slot used {item.Slot}");
+-
+-                usedSlots.Add(item.Slot);
+-            }
+-            
+-            // var usedSlots = (from iSlot in Items select iSlot.Slot).ToList();
+-            var res = 0;
+-            for (var i = 0; i < _containerSize; i++)
+-            {
+-                if (!usedSlots.Contains(i))
+-                    res++;
+-            }
+-
+-            _freeSlotCount = res;
 -        }
--        catch
+-        catch (Exception e)
 -        {
--            // Do nothing
+-            Logger.Error(e.Message);
+-            throw;
 -        }
--    }
- }
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlertBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlertBehavior.cs
-index aed143b3de..ef84735aeb 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlertBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlertBehavior.cs
-@@ -28,7 +28,7 @@ public override void Enter()
- 
-         Ai.Owner.CurrentGameStance = GameStanceType.Combat;
-         Ai.Owner.CurrentAlertness = MoveTypeAlertness.Alert;
--        
-+
-         if (Ai.Owner is { } npc)
-         {
-             // npc.Events.OnAlert(this, new OnAlertArgs { Npc = npc, Target = npc.CurrentTarget});
-@@ -52,7 +52,7 @@ public override void Tick(TimeSpan delta)
-         if ((DateTime.UtcNow > Ai._alertEndTime) && (Ai.Owner.SkillTask == null))
-         {
-             // Ai.Owner.SetTarget(null);
--            Ai.Owner.Transform.Local.SetRotation(_oldRotation.X,_oldRotation.Y, _oldRotation.Z);
-+            Ai.Owner.Transform.Local.SetRotation(_oldRotation.X, _oldRotation.Y, _oldRotation.Z);
-             // Ai.Owner.BroadcastPacket(new SCUnitModelPostureChangedPacket(Ai.Owner, BaseUnitType.Npc, ModelPostureType.ActorModelState, Ai.Owner.Template.AnimActionId, true), false);
-             Ai.Owner.SetTarget(null);
-             Ai.GoToIdle();
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlmightyAttackBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlmightyAttackBehavior.cs
-index 76b4199a83..6fdf813185 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlmightyAttackBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AlmightyAttackBehavior.cs
-@@ -1,6 +1,7 @@
- ﻿using System;
- using System.Collections.Generic;
- using System.Numerics;
-+
- using AAEmu.Commons.Utils;
- using AAEmu.Game.Core.Managers;
- using AAEmu.Game.Core.Packets.G2C;
-@@ -46,7 +47,7 @@ public override void Tick(TimeSpan delta)
- 
-         _aiParams = aiParams;
- 
--        if (!UpdateTarget() || ShouldReturn) // проверим, что таблица abuser не пустая и назначим текущую цель
-+        if (!UpdateTarget() || ShouldReturn)
-         {
-             Ai.OnNoAggroTarget();
-             return;
-@@ -104,7 +105,9 @@ public override void Exit()
-             Ai.Owner.CurrentGameStance = GameStanceType.Combat;
-             Ai.PathHandler.AiPathPointsRemaining.Enqueue(new AiPathPoint()
-             {
--                Action = AiPathPointAction.Speed, Param = "3", Position = Ai.HomePosition
-+                Action = AiPathPointAction.Speed,
-+                Param = "3",
-+                Position = Ai.HomePosition
-             });
-             Ai.GoToFollowPath();
-         }
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AttackBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AttackBehavior.cs
-index acff8fb649..7ec32b8eae 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AttackBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/AttackBehavior.cs
-@@ -19,7 +19,7 @@ public override void Enter()
-         Ai.Owner.CurrentGameStance = GameStanceType.Combat;
-         Ai.Owner.CurrentAlertness = MoveTypeAlertness.Combat;
-         Ai.Owner.BroadcastPacket(new SCUnitModelPostureChangedPacket(Ai.Owner, Ai.Owner.AnimActionId, false), false);
--        
-+
-         Ai.Owner.IsInBattle = true;
-         if (Ai.Owner is { } npc)
-         {
-@@ -33,7 +33,7 @@ public override void Tick(TimeSpan delta)
-         if (!_enter)
-             return; // not initialized yet Enter()
- 
--        if (!UpdateTarget() || ShouldReturn) // проверим, что таблица abuser не пустая и назначим текущую цель
-+        if (!UpdateTarget() || ShouldReturn)
-         {
-             Ai.OnNoAggroTarget();
-             return;
-@@ -48,10 +48,17 @@ public override void Tick(TimeSpan delta)
-         if (!CanUseSkill)
-             return;
- 
-+        var delay = 150;
-         // Will delay for 150 Milliseconds to eliminate the hanging of the skill
--        if (!Ai.Owner.CheckInterval(Delay)) { return; }
--        var targetDist = Ai.Owner.GetDistanceTo(Ai.Owner.CurrentTarget);
--        PickSkillAndUseIt(SkillUseConditionKind.OnAlert, Ai.Owner.CurrentTarget, targetDist); // используем скиллы на врага
-+        if (!Ai.Owner.CheckInterval(delay))
-+        {
-+            Logger.Trace($"Skill: CooldownTime [{delay}]!");
-+        }
-+        else
-+        {
-+            var targetDist = Ai.Owner.GetDistanceTo(Ai.Owner.CurrentTarget);
-+            PickSkillAndUseIt(SkillUseConditionKind.InCombat, Ai.Owner.CurrentTarget, targetDist);
-+        }
++        var usedSlotsCount = Items.Count(i => i != null);
++        _freeSlotCount = _containerSize - usedSlotsCount;
      }
  
-     public override void Exit()
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/DummyBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/DummyBehavior.cs
-index 60fdcb8a10..095a62ecb9 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/DummyBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/DummyBehavior.cs
-@@ -1,4 +1,5 @@
- ﻿using System;
-+
- using AAEmu.Game.Models.Game.Models;
- using AAEmu.Game.Models.Game.Units.Movements;
- 
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
-index 2b216ae217..d59ad7b08d 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
-@@ -1,18 +1,15 @@
- ﻿using System;
- using System.Collections.Generic;
--using System.Globalization;
- using System.Linq;
- using System.Numerics;
- 
- using AAEmu.Commons.Utils;
- using AAEmu.Game.Core.Managers;
--using AAEmu.Game.Models.Game.AI.v2.Controls;
- using AAEmu.Game.Models.Game.AI.v2.Params.Almighty;
- using AAEmu.Game.Models.Game.Models;
- using AAEmu.Game.Models.Game.Skills;
- using AAEmu.Game.Models.Game.Units;
- using AAEmu.Game.Models.Game.Units.Movements;
--using AAEmu.Game.Utils;
- 
- namespace AAEmu.Game.Models.Game.AI.v2.Behaviors.Common;
- 
-@@ -61,7 +58,7 @@ public override void Tick(TimeSpan delta)
- 
-         if (CheckAlert())
-             return;
--        
-+
-         //var targetDist = Ai.Owner.GetDistanceTo(Ai.Owner.CurrentTarget);
-         //PickSkillAndUseIt(SkillUseConditionKind.InIdle, Ai.Owner, targetDist);
- 
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
-index 44ba20de3e..6f737fd719 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
-@@ -1,4 +1,5 @@
- ﻿using System;
-+
- using AAEmu.Game.Models.Game.Models;
- using AAEmu.Game.Models.Game.Units.Movements;
- 
-@@ -7,7 +8,7 @@ namespace AAEmu.Game.Models.Game.AI.v2.Behaviors.Common;
- public class FollowUnitBehavior : BaseCombatBehavior
- {
-     private bool _enter;
--    
-+
-     public override void Enter()
-     {
-         Ai.Owner.CurrentGameStance = GameStanceType.Relaxed;
-@@ -39,7 +40,7 @@ public override void Tick(TimeSpan delta)
-         var targetDistance = Ai.Owner.GetDistanceTo(Ai.AiFollowUnitObj, true);
- 
-         var followSpeedMultiplier = (float)Math.Min(5.0, targetDistance / 1.5);
--        
-+
-         var moveSpeed = Ai.GetRealMovementSpeed() * followSpeedMultiplier;
-         var moveFlags = Ai.GetRealMovementFlags(moveSpeed);
-         moveSpeed *= (delta.Milliseconds / 1000.0);
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/HoldPositionBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/HoldPositionBehavior.cs
-index e6063870b0..8e60541cd4 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/HoldPositionBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/HoldPositionBehavior.cs
-@@ -10,8 +10,6 @@ namespace AAEmu.Game.Models.Game.AI.v2.Behaviors.Common;
- public class HoldPositionBehavior : BaseCombatBehavior
- {
-     private bool _enter;
--    //private float teleportThresholdDist = 7f;
--    //private float returnThresholdDist = 3f;
- 
-     public override void Enter()
-     {
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
-index bef58bd933..3218c515e3 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
-@@ -1,5 +1,5 @@
- ﻿using System;
--using System.Numerics;
-+
- using AAEmu.Game.Core.Packets.G2C;
- using AAEmu.Game.Models.Game.Models;
- using AAEmu.Game.Models.Game.Skills;
-@@ -28,7 +28,7 @@ public override void Enter()
-         Ai.Owner.CurrentGameStance = GameStanceType.Relaxed;
-         Ai.Owner.CurrentAlertness = MoveTypeAlertness.Idle;
-         Ai.Owner.BroadcastPacket(new SCUnitModelPostureChangedPacket(Ai.Owner, Ai.Owner.AnimActionId, false), false);
--        
-+
-         // Ai.AiPathPointsRemaining.Clear(); // Remove whatever path we're on
-         // Ai.Owner.Simulation.TargetPosition = Vector3.Zero; // And reset expected target
- 
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
-index fababbf4f2..32500460a7 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
-@@ -5,10 +5,8 @@
- using AAEmu.Game.Core.Packets.G2C;
- using AAEmu.Game.Models.Game.AI.Utils;
- using AAEmu.Game.Models.Game.Models;
--using AAEmu.Game.Models.Game.Units;
- using AAEmu.Game.Models.Game.Units.Movements;
- using AAEmu.Game.Utils;
--using Microsoft.CodeAnalysis;
- 
- namespace AAEmu.Game.Models.Game.AI.v2.Behaviors.Common;
- 
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RunCommandSetBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RunCommandSetBehavior.cs
-index f0d56767a4..c2b210b656 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RunCommandSetBehavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RunCommandSetBehavior.cs
-@@ -1,4 +1,4 @@
--using System;
-+﻿using System;
- using System.Numerics;
- 
- using AAEmu.Game.Core.Managers;
-@@ -50,7 +50,7 @@ public override void Exit()
-     {
-         //
-     }
--    
-+
      /// <summary>
-     /// Ticks the current AI command
+-    /// Returns a slot index number of the first free location in a inventory
++    /// Returns a slot index number of the first free location in an inventory
      /// </summary>
-@@ -85,7 +85,7 @@ private void TickCurrentAiCommand(AiCommands aiCommand, TimeSpan delta)
-                 Ai.LoadAiPathPoints(Ai.AiFileName, aiCommand.Param1 == 1);
-                 if (aiCommand.Param1 == 1)
-                 {
--                    Ai.PathHandler.AiPathPointsRemaining.Enqueue(new AiPathPoint() { Position = Vector3.Zero, Action = AiPathPointAction.ReturnToCommandSet, Param = string.Empty});
-+                    Ai.PathHandler.AiPathPointsRemaining.Enqueue(new AiPathPoint() { Position = Vector3.Zero, Action = AiPathPointAction.ReturnToCommandSet, Param = string.Empty });
+     /// <param name="preferredSlot">Preferred location if available</param>
+-    /// <returns>Location if a empty slot was found, or -1 in case the item container is full</returns>
++    /// <returns>Location if an empty slot was found, or -1 in case the item container is full</returns>
+     public int GetUnusedSlot(int preferredSlot)
+     {
+         // No max size defined, get the highest number and add one
+@@ -226,8 +187,13 @@ public int GetUnusedSlot(int preferredSlot)
+         {
+             var highestSlot = -1;
+             foreach (var i in Items)
++            {
+                 if (i.Slot > highestSlot)
++                {
+                     highestSlot = i.Slot;
++                }
++            }
++
+             highestSlot++;
+             return preferredSlot > highestSlot ? preferredSlot : highestSlot;
+         }
+@@ -249,6 +215,7 @@ public int GetUnusedSlot(int preferredSlot)
                  }
-                 Ai.GoToFollowPath();
-                 if (aiCommand.Param1 == 1)
-@@ -133,5 +133,5 @@ private void TickCurrentAiCommand(AiCommands aiCommand, TimeSpan delta)
-         if (Ai.AiCurrentCommandRunTime == TimeSpan.Zero)
-             Ai.AiCurrentCommandRunTime = TimeSpan.FromSeconds(-1);
-     }
--    
+             }
+         }
 +
- }
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs b/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
-index a1eab66430..c20a2352a0 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
-@@ -43,12 +43,24 @@ public Behavior AddTransition(Transition transition)
-         return Ai.AddTransition(this, transition);
-     }
- 
--    public float CheckSightRangeScale(float value)
-+    public SkillResult PickSkillAndUseIt(SkillUseConditionKind kind, BaseUnit target, float targetDist)
-     {
--        var sightRangeScale = value * Ai.Owner.Template.SightRangeScale;
--        if (sightRangeScale < value)
-+        var res = SkillResult.InvalidSkill;
-+        // Attack behavior probably only uses base skill ?
-+        var skills = new List<NpcSkill>();
-+        if (Ai.Owner.Template.Skills.TryGetValue(kind, out var templateSkill))
+         // Find a new slot if needed
+         if (needNewSlot)
          {
--            sightRangeScale = value;
-+            skills = templateSkill;
-+        }
-+        if (skills.Count > 0)
-+        {
-+            skills = skills
-+                .Where(s => !Ai.Owner.Cooldowns.CheckCooldown(s.SkillId))
-+                .Where(s =>
-+                {
-+                    var template = SkillManager.Instance.GetSkillTemplate(s.SkillId);
-+                    return template != null && (targetDist >= template.MinRange && targetDist <= template.MaxRange || template.TargetType == SkillTargetType.Self);
-+                }).ToList();
+@@ -260,6 +227,7 @@ public int GetUnusedSlot(int preferredSlot)
+                     return i;
+                 }
+             }
++
+             // inventory container is full
+             return -1;
          }
- 
-         if (targetDist == 0 && kind == SkillUseConditionKind.InIdle)
-@@ -136,6 +148,63 @@ public SkillResult UseSkill(Skill skill, BaseUnit target, float delay = 0)
-             return SkillResult.CooldownTime;
-         }
- 
-+        var targetDist = Ai.Owner.GetDistanceTo(target);
-+        if (targetDist < skill.Template.MinRange)
-+        {
-+            return SkillResult.TooCloseRange;
-+        }
-+
-+        if (targetDist > skill.Template.MaxRange)
-+        {
-+            return SkillResult.TooFarRange;
-+        }
-+
-+        _nextTimeToDelay = delay;
-+        var skillCaster = SkillCaster.GetByType(SkillCasterType.Unit);
-+        skillCaster.ObjId = Ai.Owner.ObjId;
-+
-+        SkillCastTarget skillCastTarget;
-+        switch (skill.Template.TargetType)
-+        {
-+            case SkillTargetType.Pos:
-+                var pos = Ai.Owner.Transform.World.Position;
-+                skillCastTarget = new SkillCastPositionTarget()
-+                {
-+                    ObjId = Ai.Owner.ObjId,
-+                    PosX = pos.X,
-+                    PosY = pos.Y,
-+                    PosZ = pos.Z,
-+                    PosRot = Ai.Owner.Transform.World.ToRollPitchYawDegrees().Z // (float)MathUtil.ConvertDirectionToDegree(pos.RotationZ) //Is this rotation right?
-+                };
-+                break;
-+            default:
-+                skillCastTarget = SkillCastTarget.GetByType(SkillCastTargetType.Unit);
-+                skillCastTarget.ObjId = target.ObjId;
-+                break;
-+        }
-+
-+        var skillObject = SkillObject.GetByType(SkillObjectType.None);
-+
-+        skill.Callback = OnSkillEnded;
-+        var result = skill.Use(Ai.Owner, skillCaster, skillCastTarget, skillObject, false, out _);
-+        // fix the eastward turn when using SelfSkill
-+        if (skill.Template.TargetType != SkillTargetType.Self && result == SkillResult.Success)
-+            Ai.Owner.LookTowards(target.Transform.World.Position);
-+        return result;
-+    }
-+
-+    public virtual void OnSkillEnded()
-+    {
-+        try
-+        {
-+            _delayEnd = DateTime.UtcNow.AddSeconds(_nextTimeToDelay);
-+        }
-+        catch
-+        {
-+            // Do nothing
-+        }
-+    }
-+
-     /// <summary>
-     /// Trigger when AI is about to attack target and goes to combat mode
-     /// </summary>
-@@ -209,16 +278,16 @@ public void OnEnemyAlert(Unit target)
-         //     var degree = MathUtil.ClampDegAngle(MathUtil.CalculateAngleFrom(Ai.Owner, player));
-         //     player.SendMessage($"ObjId {Ai.Owner.ObjId} has seen you at a angle of {degree:F0}°");
-         // }
--
-+        
-         // TODO: Tweak these values, or grab them from DB somewhere?
-         Ai._alertEndTime = DateTime.UtcNow.AddSeconds(5);
-         Ai._nextAlertCheckTime = DateTime.UtcNow.AddSeconds(7);
-         // Ai.Owner.CurrentAggroTarget = target;
-         Ai.Owner.SetTarget(target);
--
-+        
-         Ai.GoToAlert();
-     }
--
-+    
-     public bool CheckAlert()
+@@ -273,11 +241,14 @@ public int GetUnusedSlot(int preferredSlot)
+     private bool TryGetItemBySlot(int slot, out Item theItem)
      {
-         if (Ai._nextAlertCheckTime > DateTime.UtcNow)
-@@ -278,11 +347,6 @@ public bool CheckAlert()
+         foreach (var i in Items)
++        {
+             if (i.Slot == slot)
+             {
+                 theItem = i;
+                 return true;
+             }
++        }
++
+         theItem = null;
+         return false;
+     }
+@@ -285,19 +256,26 @@ private bool TryGetItemBySlot(int slot, out Item theItem)
+     public Item GetItemBySlot(int slot)
+     {
+         if (TryGetItemBySlot(slot, out var res))
++        {
+             return res;
++        }
+         else
++        {
+             return null;
++        }
+     }
+ 
+     private bool TryGetItemByItemId(ulong itemId, out Item theItem)
+     {
+         foreach (var i in Items)
++        {
+             if (i.Id == itemId)
+             {
+                 theItem = i;
+                 return true;
+             }
++        }
++
+         theItem = null;
+         return false;
+     }
+@@ -305,13 +283,17 @@ private bool TryGetItemByItemId(ulong itemId, out Item theItem)
+     public Item GetItemByItemId(ulong itemId)
+     {
+         if (TryGetItemByItemId(itemId, out var res))
++        {
+             return res;
++        }
+         else
++        {
+             return null;
++        }
+     }
+ 
+     /// <summary>
+-    /// Adds a Item Object to this container and also updates source container, for new items like craft results, use AcquireDefaultItem instead
++    /// Adds an Item Object to this container and also updates source container, for new items like craft results, use AcquireDefaultItem instead
+     /// </summary>
+     /// <param name="taskType"></param>
+     /// <param name="item">Item Object to add/move to this container</param>
+@@ -320,7 +302,9 @@ public Item GetItemByItemId(ulong itemId)
+     public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferredSlot = -1)
+     {
+         if (item == null)
++        {
+             return false;
++        }
+ 
+         var sourceContainer = item._holdingContainer;
+         var sourceSlot = (byte)item.Slot;
+@@ -331,7 +315,7 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+         var canAddToSameSlot = false;
+ 
+         // When adding wearables to equipment container, for the slot numbers if needed
+-        if ((this is EquipmentContainer) && (item is EquipItem _) && (preferredSlot < 0))
++        if (this is EquipmentContainer && item is EquipItem _ && preferredSlot < 0)
+         {
+             var validSlots = EquipmentContainer.GetAllowedGearSlots(item.Template);
+             // find valid empty slot (if any), stop looking if it is the preferred slot
+@@ -347,10 +331,10 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+ 
+         // Make sure the item is in container size's range
+         if (
+-            (ContainerType == SlotType.Inventory) && (item.Template.MaxCount > 1) &&
+-            (currentPreferredSlotItem != null) &&
+-            (currentPreferredSlotItem.TemplateId == item.TemplateId) && (currentPreferredSlotItem.Grade == item.Grade) &&
+-            (item.Count + currentPreferredSlotItem.Count <= item.Template.MaxCount))
++            ContainerType == SlotType.Inventory && item.Template.MaxCount > 1 &&
++            currentPreferredSlotItem != null &&
++            currentPreferredSlotItem.TemplateId == item.TemplateId && currentPreferredSlotItem.Grade == item.Grade &&
++            item.Count + currentPreferredSlotItem.Count <= item.Template.MaxCount)
+         {
+             newSlot = preferredSlot;
+             canAddToSameSlot = true;
+@@ -358,9 +342,14 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+         else
+         {
+             if (newSlot < 0)
++            {
+                 newSlot = GetUnusedSlot(preferredSlot);
++            }
++
+             if (newSlot < 0)
++            {
+                 return false; // Inventory Full
++            }
+         }
+ 
+         // Check if the newSlot fits
+@@ -375,8 +364,10 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+         if (canAddToSameSlot)
+         {
+             currentPreferredSlotItem.Count += item.Count;
+-            if (this.ContainerType != SlotType.None)
++            if (ContainerType != SlotType.None)
++            {
+                 itemTasks.Add(new ItemCountUpdate(currentPreferredSlotItem, item.Count));
++            }
+         }
+         else
+         {
+@@ -390,8 +381,10 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+             UpdateFreeSlotCount();
+ 
+             // Note we use SlotType.None for things like the Item BuyBack Container. Make sure to manually handle the remove for these
+-            if (this.ContainerType != SlotType.None)
++            if (ContainerType != SlotType.None)
++            {
+                 itemTasks.Add(new ItemAdd(item));
++            }
+ 
+             if (sourceContainer != this)
+             {
+@@ -401,49 +394,58 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+         }
+ 
+         // Item Tasks
+-        if ((sourceContainer != null) && (sourceContainer != this))
++        if (sourceContainer != null && sourceContainer != this)
+         {
+             sourceContainer.Items.Remove(item);
+             sourceContainer.UpdateFreeSlotCount();
+             if (sourceContainer.ContainerType != SlotType.Mail)
++            {
+                 sourceItemTasks.Add(new ItemRemoveSlot(item.Id, sourceSlotType, sourceSlot));
++            }
+         }
++
+         // We use Invalid when doing internals, don't send to client
+         if (taskType != ItemTaskType.Invalid)
+         {
+             if (itemTasks.Count > 0)
++            {
+                 Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
++            }
++
+             if (sourceItemTasks.Count > 0)
+-                sourceContainer?.Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, sourceItemTasks, new List<ulong>()));
++            {
++                sourceContainer?.Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, sourceItemTasks,
++                    new List<ulong>()));
++            }
+         }
+ 
+         ApplyBindRules(taskType);
+ 
+         // Moved to the end of the method so that the item is already in the inventory
+-        // Only trigger when moving between container with different owners with the exception of this being move to Mail container
++        // Only trigger when moving between containers with different owners except for this being move to Mail container
+         //if ((sourceContainer != this) && (item.OwnerId != OwnerId) && (this.ContainerType != SlotType.Mail))
+-        if ((sourceContainer != this) && (this.ContainerType != SlotType.Mail))
++        if (sourceContainer != this && ContainerType != SlotType.Mail)
+         {
+             Owner?.Inventory.OnAcquiredItem(item, item.Count);
+         }
+         else
+-        // Got attachment from Mail
+-        if ((item.SlotType == SlotType.Mail) && (this.ContainerType != SlotType.Mail))
++            // Got attachment from Mail
++        if (item.SlotType == SlotType.Mail && ContainerType != SlotType.Mail)
+         {
+             Owner?.Inventory.OnAcquiredItem(item, item.Count);
+         }
+         else
+-        // Adding mail attachment
+-        if ((item.SlotType != SlotType.Mail) && (this.ContainerType == SlotType.Mail))
++            // Adding mail attachment
++        if (item.SlotType != SlotType.Mail && ContainerType == SlotType.Mail)
+         {
+             Owner?.Inventory.OnConsumedItem(item, item.Count);
+         }
+ 
+-        return ((itemTasks.Count + sourceItemTasks.Count) > 0);
++        return itemTasks.Count + sourceItemTasks.Count > 0;
+     }
+ 
+     /// <summary>
+-    /// Removes (and Destroys if needed) a item from the container
++    /// Removes (and Destroys if needed) an item from the container
+     /// </summary>
+     /// <param name="task"></param>
+     /// <param name="item">Item object to be removed</param>
+@@ -452,23 +454,36 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
+     public bool RemoveItem(ItemTaskType task, Item item, bool releaseIdAsWell)
+     {
+         if (!item.CanDestroy())
++        {
+             return false;
++        }
+ 
+         // Handle items that can expire
+         GamePacket sync = null;
+-        if ((item.ExpirationOnlineMinutesLeft > 0.0) || (item.ExpirationTime > DateTime.UtcNow) || (item.UnpackTime > DateTime.UtcNow))
++        if (item.ExpirationOnlineMinutesLeft > 0.0 || item.ExpirationTime > DateTime.UtcNow ||
++            item.UnpackTime > DateTime.UtcNow)
++        {
+             sync = ItemManager.ExpireItemPacket(item);
++        }
++
+         if (sync != null)
+-            this.Owner?.SendPacket(sync);
++        {
++            Owner?.SendPacket(sync);
++        }
+ 
+         var res = item._holdingContainer.Items.Remove(item);
+         if (res && task != ItemTaskType.Invalid)
+-            item._holdingContainer?.Owner?.SendPacket(new SCItemTaskSuccessPacket(task, new List<ItemTask> { new ItemRemoveSlot(item) }, new List<ulong>()));
++        {
++            item._holdingContainer?.Owner?.SendPacket(new SCItemTaskSuccessPacket(task, [new ItemRemoveSlot(item)],
++                []));
++        }
++
+         if (res && releaseIdAsWell)
+         {
+             item._holdingContainer = null;
+             ItemManager.Instance.ReleaseId(item.Id);
+         }
++
+         UpdateFreeSlotCount();
+ 
+         Owner?.Inventory.OnConsumedItem(item, item.Count);
+@@ -487,18 +502,21 @@ public bool RemoveItem(ItemTaskType task, Item item, bool releaseIdAsWell)
+     /// <returns>The amount of items that was actually consumed, 0 when failed or not found</returns>
+     public int ConsumeItem(ItemTaskType taskType, uint templateId, int amountToConsume, Item preferredItem)
+     {
+-        if (!GetAllItemsByTemplate(templateId, -1, out var foundItems, out var count))
++        if (!GetAllItemsByTemplate(templateId, -1, out var foundItems, out _))
++        {
+             return 0; // Nothing found
++        }
+ 
+-        if ((preferredItem != null) && (templateId != preferredItem.TemplateId))
++        if (preferredItem != null && templateId != preferredItem.TemplateId)
++        {
+             return 0; // Preferred item template did not match the requested template
+-        // TODO: implement use of preferredItem (required for using specific items when you have more than one stack)
++        }
+ 
+         var totalConsumed = 0;
+         var itemTasks = new List<ItemTask>();
+ 
+         // Try to consume preferred item first
+-        if ((amountToConsume > 0) && (preferredItem != null))
++        if (amountToConsume > 0 && preferredItem != null)
+         {
+             // Remove this entry from our list
+             if (!foundItems.Remove(preferredItem))
+@@ -519,6 +537,7 @@ public int ConsumeItem(ItemTaskType taskType, uint templateId, int amountToConsu
+             {
+                 RemoveItem(taskType, preferredItem, true); // Normally, this can never fail
+             }
++
+             Owner?.Inventory.OnConsumedItem(preferredItem, toRemove);
+ 
+             totalConsumed += toRemove;
+@@ -545,13 +564,18 @@ public int ConsumeItem(ItemTaskType taskType, uint templateId, int amountToConsu
+ 
+                 totalConsumed += toRemove;
+                 if (amountToConsume <= 0)
++                {
+                     break; // We are done with the list, leave the rest as is
++                }
+             }
+         }
+ 
+         // We use Invalid when doing internals, don't send to client
+         if (taskType != ItemTaskType.Invalid)
++        {
+             Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
++        }
++
+         UpdateFreeSlotCount();
+         return totalConsumed;
+     }
+@@ -565,7 +589,8 @@ public int ConsumeItem(ItemTaskType taskType, uint templateId, int amountToConsu
+     /// <param name="gradeToAdd">Overrides default grade if possible</param>
+     /// <param name="crafterId"></param>
+     /// <returns></returns>
+-    public bool AcquireDefaultItem(ItemTaskType taskType, uint templateId, int amountToAdd, int gradeToAdd = -1, uint crafterId = 0)
++    public bool AcquireDefaultItem(ItemTaskType taskType, uint templateId, int amountToAdd, int gradeToAdd = -1,
++        uint crafterId = 0)
+     {
+         return AcquireDefaultItemEx(taskType, templateId, amountToAdd, gradeToAdd, out _, out _, crafterId);
+     }
+@@ -582,31 +607,48 @@ public bool AcquireDefaultItem(ItemTaskType taskType, uint templateId, int amoun
+     /// <param name="crafterId"></param>
+     /// <param name="preferredSlot"></param>
+     /// <returns></returns>
+-    public bool AcquireDefaultItemEx(ItemTaskType taskType, uint templateId, int amountToAdd, int gradeToAdd, out List<Item> newItemsList, out List<Item> updatedItemsList, uint crafterId, int preferredSlot = -1)
++    public bool AcquireDefaultItemEx(ItemTaskType taskType, uint templateId, int amountToAdd, int gradeToAdd,
++        out List<Item> newItemsList, out List<Item> updatedItemsList, uint crafterId, int preferredSlot = -1)
+     {
+         newItemsList = new List<Item>();
+         updatedItemsList = new List<Item>();
+         if (amountToAdd <= 0)
++        {
+             return true;
++        }
+ 
+         //GetAllItemsByTemplate(templateId, gradeToAdd, out var currentItems, out var currentTotalItemCount);
+         GetAllItemsByTemplate(templateId, out var currentItems, out var currentTotalItemCount);
+         var template = ItemManager.Instance.GetTemplate(templateId);
+         if (template == null)
++        {
+             return false; // Invalid item templateId
+-        var totalFreeSpaceForThisItem = (currentItems.Count * template.MaxCount) - currentTotalItemCount + (FreeSlotCount * template.MaxCount);
++        }
++
++        var totalFreeSpaceForThisItem = currentItems.Count * template.MaxCount - currentTotalItemCount +
++                                        FreeSlotCount * template.MaxCount;
+ 
+         // Trying to add too many item units to this container ?
+         if (amountToAdd > totalFreeSpaceForThisItem)
++        {
+             return false;
++        }
+ 
+         // Calculate grade to actually add for new items
+-        if ((template.FixedGrade >= 0) && (template.Gradable == false))
++        if (template.FixedGrade >= 0 && template.Gradable == false)
++        {
+             gradeToAdd = template.FixedGrade;
++        }
++
+         if (gradeToAdd == -1)
++        {
+             gradeToAdd = template.FixedGrade;
++        }
++
+         if (gradeToAdd < 0)
++        {
+             gradeToAdd = 0;
++        }
+ 
+         // First try to add to existing item counts
+         var itemTasks = new List<ItemTask>();
+@@ -628,7 +670,9 @@ public bool AcquireDefaultItemEx(ItemTaskType taskType, uint templateId, int amo
+                 }
+ 
+                 if (amountToAdd < 0)
++                {
+                     break;
++                }
+             }
+         }
+ 
+@@ -640,55 +684,82 @@ public bool AcquireDefaultItemEx(ItemTaskType taskType, uint templateId, int amo
+             if (newItem == null)
+             {
+                 Logger.Error($"Failed to add item with ID {templateId}, possible duplicate entries!");
++                return false;
+             }
++
+             // Add name if marked as crafter (single stack items only)
+-            if ((crafterId > 0) && (newItem.Template.MaxCount == 1))
++            if (crafterId > 0 && newItem.Template.MaxCount == 1)
+             {
+                 newItem.MadeUnitId = crafterId;
+-                newItem.WorldId = 1; // TODO: proper world id handling, this should actually be the ServerId
++                newItem.WorldId =
++                    (byte)WorldManager
++                        .DefaultWorldId; // TODO: proper world id handling, this should actually be the ServerId
+             }
++
+             amountToAdd -= addAmount;
+             var prefSlot = preferredSlot;
+-            if ((newItem.Template is BackpackTemplate) && (ContainerType == SlotType.Equipment))
++            if (newItem.Template is BackpackTemplate && ContainerType == SlotType.Equipment)
++            {
+                 prefSlot = (int)EquipmentItemSlot.Backpack;
++            }
+ 
+             // Timers
+             if (newItem.Template.ExpAbsLifetime > 0)
+-                syncPackets.Add(ItemManager.SetItemExpirationTime(newItem, DateTime.UtcNow.AddMinutes(newItem.Template.ExpAbsLifetime)));
++            {
++                syncPackets.Add(ItemManager.SetItemExpirationTime(newItem,
++                    DateTime.UtcNow.AddMinutes(newItem.Template.ExpAbsLifetime)));
++            }
++
+             if (newItem.Template.ExpOnlineLifetime > 0)
++            {
+                 syncPackets.Add(ItemManager.SetItemOnlineExpirationTime(newItem, newItem.Template.ExpOnlineLifetime));
+             if (newItem.Template.ExpDate > 0)
+                 syncPackets.Add(ItemManager.SetItemExpirationTime(newItem, DateTime.UtcNow.AddMinutes(newItem.Template.ExpDate)));
+ 
+-            if ((newItem is EquipItem equipItem) && (newItem.Template is EquipItemTemplate equipItemTemplate))
++            if (newItem is EquipItem equipItem && newItem.Template is EquipItemTemplate equipItemTemplate)
+             {
+                 equipItem.ChargeCount = equipItemTemplate.ChargeCount;
+-                if ((equipItemTemplate.ChargeLifetime > 0) && (equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) == false))
++                if (equipItemTemplate.ChargeLifetime > 0 &&
++                    equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) == false)
++                {
+                     equipItem.ChargeStartTime = DateTime.UtcNow;
++                }
+             }
+ 
+-            if (AddOrMoveExistingItem(ItemTaskType.Invalid, newItem, prefSlot)) // Task set to invalid as we send our own packets inside this function
++            if (AddOrMoveExistingItem(ItemTaskType.Invalid, newItem,
++                    prefSlot)) // Task set to invalid as we send our own packets inside this function
+             {
+                 itemTasks.Add(new ItemAdd(newItem));
+                 newItemsList.Add(newItem);
+             }
+             else
+-                throw new GameException("AcquireDefaultItem(); Unable to add new items"); // Inventory should have enough space, something went wrong
++            {
++                throw new GameException(
++                    "AcquireDefaultItem(); Unable to add new items"); // Inventory should have enough space, something went wrong
++            }
+         }
++
+         if (taskType != ItemTaskType.Invalid)
++        {
+             Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
++        }
++
+         UpdateFreeSlotCount();
+ 
+         // Send item expire packets if needed
+         foreach (var sync in syncPackets)
++        {
+             if (sync != null)
++            {
+                 Owner?.SendPacket(sync);
++            }
++        }
+ 
+-        return (itemTasks.Count > 0);
++        return itemTasks.Count > 0;
+     }
+ 
+     /// <summary>
+-    /// Count the maximum amount of items of a given templateID that can be added to a inventory taking into account the max stack size. Ignores item grade
++    /// Count the maximum amount of items of a given templateID that can be added to an inventory taking into account the max stack size. Ignores item grade
+     /// </summary>
+     /// <param name="templateId">Item template ID</param>
+     /// <returns>Amount of item units that can be added before the bag is full</returns>
+@@ -697,12 +768,15 @@ public int SpaceLeftForItem(uint templateId)
+         GetAllItemsByTemplate(templateId, -1, out var currentItems, out var currentTotalItemCount);
+         var template = ItemManager.Instance.GetTemplate(templateId);
+         if (template == null)
++        {
+             return 0; // Invalid item templateId
+-        return (currentItems.Count * template.MaxCount) - currentTotalItemCount + (FreeSlotCount * template.MaxCount);
++        }
++
++        return currentItems.Count * template.MaxCount - currentTotalItemCount + FreeSlotCount * template.MaxCount;
+     }
+ 
+     /// <summary>
+-    /// Count the maximum amount of items of a given item that can be added to a inventory taking into account the max stack size using a specific item to be added. Takes into account item grade
++    /// Count the maximum amount of items of a given item that can be added to an inventory taking into account the max stack size using a specific item to be added. Takes into account item grade
+     /// </summary>
+     /// <param name="itemToAdd">Item we wish to add for</param>
+     /// <param name="currentItems">List of items in the current container that match the itemToAdd criteria (template and grade)</param>
+@@ -714,8 +788,10 @@ public int SpaceLeftForItem(Item itemToAdd, out List<Item> currentItems)
+             currentItems = new List<Item>();
+             return 0;
+         }
++
+         GetAllItemsByTemplate(itemToAdd.TemplateId, itemToAdd.Grade, out currentItems, out var currentTotalItemCount);
+-        return (currentItems.Count * itemToAdd.Template.MaxCount) - currentTotalItemCount + (FreeSlotCount * itemToAdd.Template.MaxCount);
++        return currentItems.Count * itemToAdd.Template.MaxCount - currentTotalItemCount +
++               FreeSlotCount * itemToAdd.Template.MaxCount;
+     }
+ 
+     /// <summary>
+@@ -726,7 +802,10 @@ public List<Item> GetSlottedItemsList()
+     {
+         var res = new List<Item>(ContainerSize);
+         for (var i = 0; i < ContainerSize; i++)
++        {
+             res.Add(GetItemBySlot(i));
++        }
++
          return res;
      }
  
--    /// <summary>
--    /// Check if this NPC can get help, and if so, make them aggro the abuser
--    /// </summary>
--    /// <param name="abuser">The attacking Unit</param>
--    /// <param name="radius">Maximum range to check for help, this is not the range of the NPCs that will help, but rather possibly help. Maximum range defined in the DB is 100m</param>
-     public void UpdateAggroHelp(Unit abuser, int radius = 20)
+@@ -738,17 +817,21 @@ public List<Item> GetSlottedItemsList()
+     /// <param name="gradeToFind">Only lists items of specific grade equal to gradeToFind or any grade if -1 was provided</param>
+     /// <param name="unitsOfItemFound">Total count of the count values of the found items</param>
+     /// <returns>True if any item was found</returns>
+-    public bool GetAllItemsByTemplate(uint templateId, int gradeToFind, out List<Item> foundItems, out int unitsOfItemFound)
++    public bool GetAllItemsByTemplate(uint templateId, int gradeToFind, out List<Item> foundItems,
++        out int unitsOfItemFound)
      {
-         var npcs = WorldManager.GetAround<Npc>(Ai.Owner,  Ai.Owner.Template.AttackStartRangeScale * radius);
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs b/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
-index 0fcbf53307..63431648a4 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
-@@ -1,4 +1,4 @@
--using System;
-+﻿using System;
- using System.Collections.Generic;
- 
- using System.Linq;
-@@ -124,19 +124,15 @@ private void SetCurrentBehavior(Behavior behavior)
- 
-     protected void SetCurrentBehavior(BehaviorKind kind)
+         foundItems = new List<Item>();
+         unitsOfItemFound = 0;
+         foreach (var i in Items)
+-            if ((i.TemplateId == templateId) && ((gradeToFind < 0) || (gradeToFind == i.Grade)))
++        {
++            if (i.TemplateId == templateId && (gradeToFind < 0 || gradeToFind == i.Grade))
+             {
+                 foundItems.Add(i);
+                 unitsOfItemFound += i.Count;
+             }
+-        return (foundItems.Count > 0);
++        }
++
++        return foundItems.Count > 0;
+     }
+     public bool GetAllItemsByTemplate(uint templateId, out List<Item> foundItems, out int unitsOfItemFound)
      {
--        if (!_behaviors.TryGetValue(kind, out var nextBehavior))
-+        if (!_behaviors.ContainsKey(kind))
+@@ -769,11 +852,15 @@ public void ApplyBindRules(ItemTaskType taskType)
          {
-             Logger.Trace(
-                 $"Trying to set Npc {Owner.TemplateId}:{Owner.ObjId} current behavior, but it is not valid. Missing behavior: {kind}");
-             return;
-         }
+             if (i.HasFlag(ItemFlag.SoulBound) == false)
+             {
+-                if ((ContainerType == SlotType.Inventory) && (i.Template.BindType == ItemBindType.BindOnPickup))
++                if (ContainerType == SlotType.Inventory && i.Template.BindType == ItemBindType.BindOnPickup)
++                {
+                     i.SetFlag(ItemFlag.SoulBound);
++                }
  
--        // Ignore if not changed
--        if (_currentBehavior == nextBehavior)
--            return;
--
--        //Logger.Trace($"Set Npc {Owner.TemplateId}:{Owner.ObjId} current behavior: {kind}");
--        SetCurrentBehavior(nextBehavior);
-+        Logger.Trace($"Set Npc {Owner.TemplateId}:{Owner.ObjId} current behavior: {kind}");
-+        SetCurrentBehavior(_behaviors[kind]);
+-                if ((ContainerType == SlotType.Equipment) && (i.Template.BindType == ItemBindType.BindOnEquip))
++                if (ContainerType == SlotType.Equipment && i.Template.BindType == ItemBindType.BindOnEquip)
++                {
+                     i.SetFlag(ItemFlag.SoulBound);
++                }
+ 
+                 if (i.HasFlag(ItemFlag.SoulBound))
+                 {
+@@ -781,8 +868,11 @@ public void ApplyBindRules(ItemTaskType taskType)
+                 }
+             }
+         }
++
+         if (itemTasks.Count > 0)
++        {
+             Owner?.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
++        }
      }
  
-     public Behavior AddTransition(Behavior source, Transition target)
+     /// <summary>
+@@ -791,17 +881,27 @@ public void ApplyBindRules(ItemTaskType taskType)
+     public void Wipe()
+     {
+         while (Items.Count > 0)
++        {
+             RemoveItem(ItemTaskType.Invalid, Items[0], true);
++        }
++
+         UpdateFreeSlotCount();
+     }
+ 
+     public virtual bool CanAccept(Item item, int targetSlot)
+     {
+         if (item == null)
++        {
+             return true;
++        }
++
+         // When it's a backpack, allow only gliders by default
+-        if (PartOfPlayerInventory && (item.Template is BackpackTemplate backpackTemplate))
+-            return (backpackTemplate.BackpackType == BackpackType.Glider) || (backpackTemplate.BackpackType == BackpackType.ToyFlag);
++        if (PartOfPlayerInventory && item.Template is BackpackTemplate backpackTemplate)
++        {
++            return backpackTemplate.BackpackType == BackpackType.Glider ||
++                   backpackTemplate.BackpackType == BackpackType.ToyFlag;
++        }
++
+         return true;
+     }
+ 
+@@ -811,22 +911,28 @@ public virtual bool CanAccept(Item item, int targetSlot)
+     /// <param name="containerTypeName"></param>
+     /// <param name="ownerId"></param>
+     /// <param name="slotType"></param>
+-    /// <param name="isPartOfPlayerInventory"></param>
+     /// <param name="createWithNewId"></param>
+     /// <returns></returns>
+-    public static ItemContainer CreateByTypeName(string containerTypeName, uint ownerId, SlotType slotType, bool createWithNewId)
++    public static ItemContainer CreateByTypeName(string containerTypeName, uint ownerId, SlotType slotType,
++        bool createWithNewId)
+     {
+         if (containerTypeName.EndsWith("SlaveEquipmentContainer"))
+             return new SlaveEquipmentContainer(ownerId, slotType, createWithNewId);
+ 
+         if (containerTypeName.EndsWith("MateEquipmentContainer"))
++        {
+             return new MateEquipmentContainer(ownerId, slotType, createWithNewId);
++        }
+ 
+         if (containerTypeName.EndsWith("EquipmentContainer"))
++        {
+             return new EquipmentContainer(ownerId, slotType, createWithNewId);
++        }
+ 
+         if (containerTypeName.EndsWith("CofferContainer"))
++        {
+             return new CofferContainer(ownerId, createWithNewId);
++        }
+ 
+         // Fall-back
+         return new ItemContainer(ownerId, slotType, createWithNewId);
+@@ -836,7 +942,10 @@ public string ContainerTypeName()
+     {
+         var cName = GetType().Name;
+         if (cName.Contains('.'))
++        {
+             cName = cName.Substring(cName.LastIndexOf(".", StringComparison.InvariantCulture) + 1);
++        }
++
+         return cName;
+     }
+ 
+diff --git a/AAEmu.Game/Models/Game/Items/Loots/LootPack.cs b/AAEmu.Game/Models/Game/Items/Loots/LootPack.cs
+index dd7330a7ef..661de59d4c 100644
+--- a/AAEmu.Game/Models/Game/Items/Loots/LootPack.cs
++++ b/AAEmu.Game/Models/Game/Items/Loots/LootPack.cs
+@@ -175,25 +175,53 @@ public List<Item> GenerateNpcPackItems(ref ulong baseId, float lootDropRate = 1.
+     /// <param name="character"></param>
+     /// <param name="taskType"></param>
+     /// <param name="generatedList"></param>
+-    public void GiveLootPack(Character character, ItemTaskType taskType, List<(uint itemId, int count, byte grade)> generatedList = null)
++    public bool GiveLootPack(Character character, ItemTaskType taskType, List<(uint itemId, int count, byte grade)> generatedList = null)
+     {
+         // If it is not generated yet, generate loot pack info now
+         if (generatedList == null)
+             generatedList = GeneratePack(character);
+ 
++        var canAdd = true;
++        // First check for room
++        foreach (var (itemTemplateId, count, grade) in generatedList)
++        {
++            if (itemTemplateId == Item.Coins)
++                continue;
++            var freeSpace = character.Inventory.Bag.SpaceLeftForItem(itemTemplateId);
++            if (freeSpace < count)
++            {
++                canAdd = false;
++                break;
++            }
++
++        }
++
++        // Not enough room to give the items, give none
++        if (!canAdd)
++            return false;
++
+         // Distribute the items (and coins)
+-        foreach (var tuple in generatedList)
++        foreach (var (itemTemplateId, count, grade) in generatedList)
+         {
+-            if (tuple.itemId == 500)
++            if (itemTemplateId == Item.Coins)
+             {
+                 // Logger.Debug("{Category} - {Character} got {Amount} from lootpack {Lootpack}");
+-                character.AddMoney(SlotType.Inventory, tuple.count, taskType);
++                character.AddMoney(SlotType.Inventory, count, taskType);
+                 continue;
+             }
+ 
+-            if (!character.Inventory.TryAddNewItem(taskType, tuple.itemId, tuple.count, tuple.grade))
+-                Logger.Error($"Unable to give loot to {character.Name} - ItemId: {tuple.itemId} x {tuple.count} at grade {tuple.grade}");
++            // Get actual grade
++            var itemTemplate = ItemManager.Instance.GetTemplate(itemTemplateId);
++            var gradeToAdd = itemTemplate.FixedGrade > 0 ? itemTemplate.FixedGrade : grade > 1 ? grade : -1;
++
++            if (!character.Inventory.TryAddNewItem(taskType, itemTemplateId, count, gradeToAdd))
++            {
++                Logger.Error($"Unable to give loot to {character.Name} - ItemId: {itemTemplate} x {count} at grade {gradeToAdd} (loot grade {grade})");
++                return false;
++            }
+         }
++
++        return true;
+     }
+ 
+     private static byte GetGradeFromDistribution(uint id)
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/FishingLoot.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/FishingLoot.cs
+index 1aff562b6e..fd61907f94 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/FishingLoot.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/FishingLoot.cs
+@@ -45,8 +45,8 @@ public override void Execute(BaseUnit caster,
+         {
+             Logger.Warn($"FishingLoot: {character.Name} в таблицах добычи отсутствует требуемый LootPackId={lootTableId}");
+             return;
+-        }
+-
+-        pack.GiveLootPack(character, ItemTaskType.SkillEffectGainItem);
++        
++        if (!pack.GiveLootPack(character, ItemTaskType.SkillEffectGainItem))
++            character.SendErrorMessage(ErrorMessageType.BagFull);
+     }
+ }
+diff --git a/AAEmu.Game/Models/Game/Units/BaseUnit.cs b/AAEmu.Game/Models/Game/Units/BaseUnit.cs
+index ec4b78dbcb..0ba89db6ae 100644
+--- a/AAEmu.Game/Models/Game/Units/BaseUnit.cs
++++ b/AAEmu.Game/Models/Game/Units/BaseUnit.cs
+@@ -60,7 +60,8 @@ public bool CanAttack(BaseUnit target)
+         var zoneFaction = FactionManager.Instance.GetFaction(zoneFactionId);
+         if (zoneFaction == null)
+         {
+-            //Logger.Warn($"CanAttack zone faction is null {this.ObjId} - {target.ObjId}");
++            // This is normal behavior for let's say Diamond Shores in 1.2 which is marked with non-existing FactionId 5
++            // Logger.Warn($"CanAttack zone faction is null {this.ObjId} - {target.ObjId}");
+             zoneFaction = FactionManager.Instance.GetFaction(FactionsEnum.Neutral);
+         }
+         var targetMotherFaction = target.Faction?.MotherId ?? 0;
