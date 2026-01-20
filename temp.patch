@@ -1,41 +1,23 @@
-From 79a0d38af85d2f7aa7f3747bbac40bd0a7bb1506 Mon Sep 17 00:00:00 2001
-From: MangoXing <xiaoxing0055@gmail.com>
-Date: Thu, 8 Aug 2024 16:07:58 +0800
-Subject: [PATCH] Fix Overburdened buff can use Portal (#1063)
+From f5d1090b0b4326fb705d5afb62001c29958087f7 Mon Sep 17 00:00:00 2001
+From: NLObP <38990417+NL0bP@users.noreply.github.com>
+Date: Thu, 8 Aug 2024 16:56:07 +0300
+Subject: [PATCH] [Game][Ai] Fixed support distance calculation: (#1064)
 
+- They incorrectly calculated the distance to themselves. We calculate the NPC that the player attacked.
 ---
- AAEmu.Game/Core/Managers/PortalManager.cs      | 8 ++++++++
- AAEmu.Game/Models/Game/Skills/BuffConstants.cs | 3 ++-
- 2 files changed, 10 insertions(+), 1 deletion(-)
+ AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/AAEmu.Game/Core/Managers/PortalManager.cs b/AAEmu.Game/Core/Managers/PortalManager.cs
-index 9bf6b9a8d9..dd17159c4b 100644
---- a/AAEmu.Game/Core/Managers/PortalManager.cs
-+++ b/AAEmu.Game/Core/Managers/PortalManager.cs
-@@ -429,6 +429,14 @@ public static void UsePortal(Character character, uint objId)
-         var portalInfo = (Models.Game.Units.Portal)WorldManager.Instance.GetNpc(objId);
-         if (portalInfo == null) return;
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs b/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
+index bd5110dfa7..b2b5278075 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Framework/Behavior.cs
+@@ -359,7 +359,7 @@ public void UpdateAggroHelp(Unit abuser, int radius = 200)
  
-+
-+        //have Overburdened buff cannot UsePortal
-+        if (character.Buffs.CheckBuffTag((uint)BuffConstants.Overburdened))
-+        {
-+            character.SendErrorMessage(ErrorMessageType.CannotUsePortalWithBackpack);
-+            return;
-+        }
-+
-         character.DisabledSetPosition = true;
-         // TODO - UnitPortalUsed
-         // TODO - Maybe need unitState?
-diff --git a/AAEmu.Game/Models/Game/Skills/BuffConstants.cs b/AAEmu.Game/Models/Game/Skills/BuffConstants.cs
-index cf40c3af19..590e6d1b1e 100644
---- a/AAEmu.Game/Models/Game/Skills/BuffConstants.cs
-+++ b/AAEmu.Game/Models/Game/Skills/BuffConstants.cs
-@@ -29,5 +29,6 @@ public enum BuffConstants : uint
-     EquipTwoHanded = 8227,
-     InBeautySalon = 6117,
-     SearchSchoolOfFish = 5736,
--    Overburdened = 7221 // SustainBuff - Carrying heavy objects reduces movement speed and prevents teleporting or gliding.
-+    Overburdened = 831 // SustainBuff - Carrying heavy objects reduces movement speed and prevents teleporting or gliding.
-+   // Overburdened = 7221
- }
+         foreach (var npc in npcs
+                      .Where(npc => !npc.IsInBattle && npc.Template.AcceptAggroLink)
+-                     .Where(npc => npc.GetDistanceTo(npc.Ai.Owner) <= npc.Template.AggroLinkHelpDist))
++                     .Where(npc => npc.GetDistanceTo(Ai.Owner) <= npc.Template.AggroLinkHelpDist))
+         {
+             if (npc.Template.Aggression && npc.Template.AggroLinkSpecialRuleId == AggroLinkSpecialRuleKind.None)
+             {
