@@ -230070,6 +230070,7 @@
     "Id": 0,
     "UnitId": 8123,
     "Title": "Farkrag the Wanderer",
+    "FollowPath": "falcorth_farkrag",
     "Position": {
       "X": 23719.08,
       "Y": 9449.88,
