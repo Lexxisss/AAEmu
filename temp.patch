@@ -1,22 +1,47 @@
-From e28cfda0a3f161032a371a2c54ed7c22b09ff1a1 Mon Sep 17 00:00:00 2001
-From: ZeromusXYZ <zeromus.xyz@gmail.com>
-Date: Sun, 28 Jul 2024 16:18:14 +0200
-Subject: [PATCH] [Game] Forgot to check if AI is still moving
+From 6b2413ded5100c0f37c4ea8e4ea3820226ca0eb4 Mon Sep 17 00:00:00 2001
+From: Donella Kreiger <ahlyl94@gmail.com>
+Date: Mon, 29 Jul 2024 22:52:44 +0800
+Subject: [PATCH] [Game] Fix location error caused by not using portal in
+ main_world (#1054)
 
 ---
- AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ AAEmu.Game/Core/Managers/PortalManager.cs | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
 
-diff --git a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
-index 26a9d6ec9..a50788ed5 100644
---- a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
-+++ b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
-@@ -114,7 +114,7 @@ public bool RunCurrentPath(TimeSpan delta)
- 
-     public bool HasUnhandledPathMovementData()
-     {
--        return AiPathPointsRemaining.Count > 0 || AiPathLooping;
-+        return AiPathPointsRemaining.Count > 0 || AiPathLooping || TargetPosition != Vector3.Zero;
-     }
- 
-     public bool HasPathMovementData()
+diff --git a/AAEmu.Game/Core/Managers/PortalManager.cs b/AAEmu.Game/Core/Managers/PortalManager.cs
+index 474315e57..9bf6b9a8d 100644
+--- a/AAEmu.Game/Core/Managers/PortalManager.cs
++++ b/AAEmu.Game/Core/Managers/PortalManager.cs
+@@ -15,6 +15,7 @@
+ using AAEmu.Game.Models.Game.Char;
+ using AAEmu.Game.Models.Game.Items;
+ using AAEmu.Game.Models.Game.Items.Actions;
++using AAEmu.Game.Models.Game.NPChar;
+ using AAEmu.Game.Models.Game.OpenPortal;
+ using AAEmu.Game.Models.Game.Skills;
+ using AAEmu.Game.Models.Game.Teleport;
+@@ -431,6 +432,24 @@ public static void UsePortal(Character character, uint objId)
+         character.DisabledSetPosition = true;
+         // TODO - UnitPortalUsed
+         // TODO - Maybe need unitState?
++        if (portalInfo.TeleportPosition.InstanceId != character.InstanceId)
++        {
++            character.SendPacket(
++                new SCLoadInstancePacket(
++                    portalInfo.TeleportPosition.WorldId,
++                    portalInfo.TeleportPosition.ZoneId,
++                    portalInfo.TeleportPosition.World.Position.X,
++                    portalInfo.TeleportPosition.World.Position.Y,
++                    portalInfo.TeleportPosition.World.Position.Z,
++                    portalInfo.TeleportPosition.World.Rotation.X.DegToRad(),
++                    portalInfo.TeleportPosition.World.Rotation.Y.DegToRad(),
++                    portalInfo.TeleportPosition.World.Rotation.Z.DegToRad()
++                )
++            );
++
++            character.Transform = portalInfo.TeleportPosition.Clone(character);
++            character.InstanceId = portalInfo.TeleportPosition.WorldId;
++        }
+         // TODO - Reason, ErrorMessage
+         character.SendPacket(new SCTeleportUnitPacket(TeleportReason.Portal, ErrorMessageType.NoErrorMessage, portalInfo.TeleportPosition.World.Position.X,
+             portalInfo.TeleportPosition.World.Position.Y, portalInfo.TeleportPosition.World.Position.Z,
