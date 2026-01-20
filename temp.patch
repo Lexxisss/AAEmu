@@ -1,47 +1,256 @@
-From 6b2413ded5100c0f37c4ea8e4ea3820226ca0eb4 Mon Sep 17 00:00:00 2001
-From: Donella Kreiger <ahlyl94@gmail.com>
-Date: Mon, 29 Jul 2024 22:52:44 +0800
-Subject: [PATCH] [Game] Fix location error caused by not using portal in
- main_world (#1054)
+From 30db08e8d2f37b8a58c66d8e09b47a941188a9d9 Mon Sep 17 00:00:00 2001
+From: HCN <hermanocabral@hermanocabral.com>
+Date: Mon, 29 Jul 2024 21:56:08 +0700
+Subject: [PATCH] [All] Remove unused code from AAEmu.Commons (#1055)
 
 ---
- AAEmu.Game/Core/Managers/PortalManager.cs | 19 +++++++++++++++++++
- 1 file changed, 19 insertions(+)
+ AAEmu.Commons/IO/Serialization.cs             | 109 ------------------
+ AAEmu.Commons/Network/BufferManager.cs        |  56 ---------
+ AAEmu.Commons/Network/NetBase.cs              |  13 ---
+ .../Network/SocketAsyncEventArgsPool.cs       |  38 ------
+ 4 files changed, 216 deletions(-)
+ delete mode 100644 AAEmu.Commons/IO/Serialization.cs
+ delete mode 100644 AAEmu.Commons/Network/BufferManager.cs
+ delete mode 100644 AAEmu.Commons/Network/NetBase.cs
+ delete mode 100644 AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
 
-diff --git a/AAEmu.Game/Core/Managers/PortalManager.cs b/AAEmu.Game/Core/Managers/PortalManager.cs
-index 474315e57..9bf6b9a8d 100644
---- a/AAEmu.Game/Core/Managers/PortalManager.cs
-+++ b/AAEmu.Game/Core/Managers/PortalManager.cs
-@@ -15,6 +15,7 @@
- using AAEmu.Game.Models.Game.Char;
- using AAEmu.Game.Models.Game.Items;
- using AAEmu.Game.Models.Game.Items.Actions;
-+using AAEmu.Game.Models.Game.NPChar;
- using AAEmu.Game.Models.Game.OpenPortal;
- using AAEmu.Game.Models.Game.Skills;
- using AAEmu.Game.Models.Game.Teleport;
-@@ -431,6 +432,24 @@ public static void UsePortal(Character character, uint objId)
-         character.DisabledSetPosition = true;
-         // TODO - UnitPortalUsed
-         // TODO - Maybe need unitState?
-+        if (portalInfo.TeleportPosition.InstanceId != character.InstanceId)
-+        {
-+            character.SendPacket(
-+                new SCLoadInstancePacket(
-+                    portalInfo.TeleportPosition.WorldId,
-+                    portalInfo.TeleportPosition.ZoneId,
-+                    portalInfo.TeleportPosition.World.Position.X,
-+                    portalInfo.TeleportPosition.World.Position.Y,
-+                    portalInfo.TeleportPosition.World.Position.Z,
-+                    portalInfo.TeleportPosition.World.Rotation.X.DegToRad(),
-+                    portalInfo.TeleportPosition.World.Rotation.Y.DegToRad(),
-+                    portalInfo.TeleportPosition.World.Rotation.Z.DegToRad()
-+                )
-+            );
-+
-+            character.Transform = portalInfo.TeleportPosition.Clone(character);
-+            character.InstanceId = portalInfo.TeleportPosition.WorldId;
-+        }
-         // TODO - Reason, ErrorMessage
-         character.SendPacket(new SCTeleportUnitPacket(TeleportReason.Portal, ErrorMessageType.NoErrorMessage, portalInfo.TeleportPosition.World.Position.X,
-             portalInfo.TeleportPosition.World.Position.Y, portalInfo.TeleportPosition.World.Position.Z,
+diff --git a/AAEmu.Commons/IO/Serialization.cs b/AAEmu.Commons/IO/Serialization.cs
+deleted file mode 100644
+index f41aaa168b..0000000000
+--- a/AAEmu.Commons/IO/Serialization.cs
++++ /dev/null
+@@ -1,109 +0,0 @@
+-using System;
+-using System.IO;
+-using System.Text;
+-using System.Xml.Serialization;
+-
+-
+-namespace AAEmu.Commons.IO;
+-
+-/// <summary>
+-/// Helps with serializing an object to XML and back again.
+-/// </summary>
+-public static class Serialization
+-{
+-    /// <summary>
+-    /// Converts an object to XML
+-    /// </summary>
+-    /// <param name="temp">Object to convert</param>
+-    /// <param name="fileName">File to save the XML to</param>
+-    /// <returns>string representation of the object in XML format</returns>
+-    public static string ObjectToXML(object temp, string rootName, string fileName)
+-    {
+-        var xml = ObjectToXML(temp, rootName);
+-        File.AppendAllText(fileName, xml);
+-        return xml;
+-    }
+-
+-    /// <summary>
+-    /// Converts an object to XML
+-    /// </summary>
+-    /// <param name="temp">Object to convert</param>
+-    /// <returns>string representation of the object in XML format</returns>
+-    public static string ObjectToXML(object temp, string rootName)
+-    {
+-        if (temp == null)
+-            throw new ArgumentException("Object can not be null");
+-        using (var stream = new MemoryStream())
+-        {
+-            var serializer = new XmlSerializer(temp.GetType(), new XmlRootAttribute(rootName));
+-            serializer.Serialize(stream, temp);
+-            stream.Flush();
+-            return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Position);
+-        }
+-    }
+-
+-    /// <summary>
+-    /// Takes an XML file and exports the Object it holds
+-    /// </summary>
+-    /// <param name="fileName">File name to use</param>
+-    /// <param name="result">Object to export to</param>
+-    public static void XMLToObject<T>(string fileName, out T result, string rootName)
+-    {
+-        if (string.IsNullOrEmpty(fileName))
+-            throw new ArgumentException("File name can not be null/empty");
+-        if (!File.Exists(fileName))
+-            throw new ArgumentException("File does not exist");
+-        var content = FileManager.GetFileContents(fileName);
+-        result = XMLToObject<T>(content, rootName);
+-    }
+-
+-    /// <summary>
+-    /// Converts an XML string to an object
+-    /// </summary>
+-    /// <typeparam name="T">Object type</typeparam>
+-    /// <param name="xml">XML string</param>
+-    /// <returns>The object of the specified type</returns>
+-    public static T XMLToObject<T>(string xml, string rootName)
+-    {
+-        if (string.IsNullOrEmpty(xml))
+-            throw new ArgumentException("XML can not be null/empty");
+-        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+-        {
+-            var serializer = new XmlSerializer(typeof(T), new XmlRootAttribute(rootName));
+-            return (T)serializer.Deserialize(stream);
+-        }
+-    }
+-
+-    /// <summary>
+-    /// Takes an XML file and exports the Object it holds
+-    /// </summary>
+-    /// <param name="fileName">File name to use</param>
+-    /// <param name="result">Object to export to</param>
+-    /// <param name="type">Object type to export</param>
+-    public static void XMLToObject(string fileName, out object result, Type type, string rootName)
+-    {
+-        if (string.IsNullOrEmpty(fileName))
+-            throw new ArgumentException("File name can not be null/empty");
+-        if (!File.Exists(fileName))
+-            throw new ArgumentException("File does not exist");
+-        var content = FileManager.GetFileContents(fileName);
+-        result = XMLToObject(content, type, rootName);
+-    }
+-
+-    /// <summary>
+-    /// Converts an XML string to an object
+-    /// </summary>
+-    /// <param name="xml">XML string</param>
+-    /// <param name="type">Object type to export</param>
+-    /// <returns>The object of the specified type</returns>
+-    public static object XMLToObject(string xml, Type type, string rootName)
+-    {
+-        if (string.IsNullOrEmpty(xml))
+-            throw new ArgumentException("XML can not be null/empty");
+-        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
+-        {
+-            var serializer = new XmlSerializer(type, new XmlRootAttribute(rootName));
+-            return serializer.Deserialize(stream);
+-        }
+-    }
+-}
+diff --git a/AAEmu.Commons/Network/BufferManager.cs b/AAEmu.Commons/Network/BufferManager.cs
+deleted file mode 100644
+index 836a2fa1ab..0000000000
+--- a/AAEmu.Commons/Network/BufferManager.cs
++++ /dev/null
+@@ -1,56 +0,0 @@
+-﻿using System.Collections.Concurrent;
+-using System.Net.Sockets;
+-using NLog;
+-
+-namespace AAEmu.Commons.Network;
+-
+-public class BufferManager
+-{
+-    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
+-
+-    private int _numBytes;
+-    private byte[] _buffer;
+-    private ConcurrentStack<int> _freeIndexPool;
+-    private int _currentIndex;
+-    private int _bufferSize;
+-
+-    public BufferManager(int totalBytes, int bufferSize)
+-    {
+-        _numBytes = totalBytes;
+-        _currentIndex = 0;
+-        _bufferSize = bufferSize;
+-        _freeIndexPool = new ConcurrentStack<int>();
+-    }
+-
+-    public void InitBuffer()
+-    {
+-        _buffer = new byte[_numBytes];
+-    }
+-
+-    public bool SetBuffer(SocketAsyncEventArgs args)
+-    {
+-        lock (_freeIndexPool)
+-        {
+-            if (!_freeIndexPool.IsEmpty)
+-            {
+-                if (!_freeIndexPool.TryPop(out var offset))
+-                    Logger.Warn("TryPop from _freeIndexPool ConcurrentStack failed.");
+-                args.SetBuffer(_buffer, offset, _bufferSize);
+-            }
+-            else
+-            {
+-                if ((_numBytes - _bufferSize) < _currentIndex)
+-                    return false;
+-                args.SetBuffer(_buffer, _currentIndex, _bufferSize);
+-                _currentIndex += _bufferSize;
+-            }
+-        }
+-        return true;
+-    }
+-
+-    public void FreeBuffer(SocketAsyncEventArgs args)
+-    {
+-        _freeIndexPool.Push(args.Offset);
+-        //args.SetBuffer(null, 0, 0);
+-    }
+-}
+diff --git a/AAEmu.Commons/Network/NetBase.cs b/AAEmu.Commons/Network/NetBase.cs
+deleted file mode 100644
+index f20fc9f84c..0000000000
+--- a/AAEmu.Commons/Network/NetBase.cs
++++ /dev/null
+@@ -1,13 +0,0 @@
+-﻿using AAEmu.Commons.Network.Core;
+-
+-namespace AAEmu.Commons.Network;
+-
+-public interface INetBase
+-{
+-    void OnConnect(Session session);
+-    void OnReceive(Session session, byte[] buf, int bytes);
+-    void OnSend(Session session, byte[] buf, int offset, int bytes);
+-    void OnDisconnect(Session session);
+-    void RemoveSession(Session session);
+-}
+-
+diff --git a/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs b/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
+deleted file mode 100644
+index 6cc75c3330..0000000000
+--- a/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
++++ /dev/null
+@@ -1,38 +0,0 @@
+-﻿using System;
+-using System.Collections.Concurrent;
+-using System.Net.Sockets;
+-using NLog;
+-
+-namespace AAEmu.Commons.Network;
+-
+-public class SocketAsyncEventArgsPool
+-{
+-    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
+-    private ConcurrentStack<SocketAsyncEventArgs> _pool;
+-
+-    public int Count => _pool.Count;
+-    public bool IsEmpty => _pool.IsEmpty;
+-
+-    public SocketAsyncEventArgsPool()
+-    {
+-        _pool = new ConcurrentStack<SocketAsyncEventArgs>();
+-    }
+-
+-    public void Push(SocketAsyncEventArgs item)
+-    {
+-        if (item == null)
+-        {
+-            Logger.Error("Items added to a SocketAsyncEventArgsPool cannot be null.");
+-            throw
+-                new ArgumentNullException(nameof(item));
+-        }
+-        _pool.Push(item);
+-    }
+-
+-    public SocketAsyncEventArgs Pop()
+-    {
+-        if (!_pool.TryPop(out var output))
+-            Logger.Error("TryPop from SocketAsyncEventArgs ConcurrentStack failed.");
+-        return output;
+-    }
+-}
