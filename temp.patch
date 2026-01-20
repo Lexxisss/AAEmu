@@ -1,86 +1,233 @@
-From 8d3604429ee6ed44e4fa4b14e082ee2ab620c52a Mon Sep 17 00:00:00 2001
-From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Wed, 31 Jul 2024 12:27:49 +0300
-Subject: [PATCH] Merge errors fixed; Enabled movement Forest keeper Arthtur.
+From b57a5109691b45df276ad6ec90b37e1639d7e3ed Mon Sep 17 00:00:00 2001
+From: ZeromusXYZ <zeromus.xyz@gmail.com>
+Date: Sat, 3 Aug 2024 22:04:25 +0200
+Subject: [PATCH] [Game] Added support for taming nets (#1060)
 
+* [Game] Added support for taming nets
+
+- Implemented the ``CapturePet`` special effect (with too many magic numbers)
+- Added a missing ``SCCombatFirstHitPacket`` on initial aggro so the NPC is marked as "occupied" by the client.
+- Added consumption of source item if reagents list is empty with a ``ApplyReagent`` effect.
+
+* [Game] Removed magic numbers for CapturePet
+
+Co-Authored-By: @mgpreson
+This PR closes #618
 ---
- .../Data/Path/NuiForestkeeperArthur.path      |  9 +++----
- .../Data/Worlds/main_world/npc_spawns.json    |  1 +
- AAEmu.Game/GameData/TagsGameData.cs           | 25 +++++++++----------
- 3 files changed, 16 insertions(+), 19 deletions(-)
+ .../Core/Managers/UnitManagers/NpcManager.cs  |  2 +-
+ .../Core/Packets/G2C/SCAiAggroPacket.cs       | 16 +++--
+ AAEmu.Game/Models/Game/NPChar/Npc.cs          |  3 +
+ AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs  |  2 +-
+ .../Models/Game/Skills/Effects/AggroEffect.cs |  2 +-
+ .../Game/Skills/Effects/DamageEffect.cs       |  8 +--
+ .../Effects/SpecialEffects/ApplyReagents.cs   |  5 ++
+ .../Effects/SpecialEffects/CapturePet.cs      | 58 ++++++++++++++++++-
+ 8 files changed, 79 insertions(+), 17 deletions(-)
 
-diff --git a/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path b/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
-index abb67264ce..203267f06e 100644
---- a/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
-+++ b/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
-@@ -1,6 +1,6 @@
--|15530.29|14841.57|138.9546|
--|15530.29|14841.57|138.9546|
--|15530.29|14841.57|138.9546|
-+Speed|15530.29|14841.57|138.9546|1.5
-+ActorFlags|15530.29|14841.57|138.9546|5
-+EnableLoop|15530.29|14841.57|138.9546|
- |15527.59|14845.04|139.5038|
- |15524.53|14848.95|139.994|
- |15521.39|14852.82|140.4202|
-@@ -25,6 +25,3 @@
- |15435.43|14902.52|143.3404|
- |15430.37|14902.95|143.2513|
- |15429.31|14903.04|143.2393|
--|15429.31|14903.04|143.2393|
--|15429.31|14903.04|143.2393|
--|15429.31|14903.04|143.2393|
-diff --git a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-index 259a5cfdb5..a92c0b3124 100644
---- a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-+++ b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-@@ -107324,6 +107324,7 @@
-     "Id": 0,
-     "UnitId": 11999,
-     "Title": "Forest Keeper Arthur",
-+    "FollowPath": "NuiForestkeeperArthur",
-     "Position": {
-       "X": 15547.53,
-       "Y": 14808.13,
-diff --git a/AAEmu.Game/GameData/TagsGameData.cs b/AAEmu.Game/GameData/TagsGameData.cs
-index 533244f334..fbcc7fba99 100644
---- a/AAEmu.Game/GameData/TagsGameData.cs
-+++ b/AAEmu.Game/GameData/TagsGameData.cs
-@@ -128,25 +128,24 @@ public void Load(SqliteConnection connection, SqliteConnection connection2)
-         #endregion
+diff --git a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
+index 24b2d79a2b..b06511f787 100644
+--- a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
++++ b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
+@@ -538,7 +538,7 @@ public void Load()
+                         template.ShowNameTag = reader.GetBoolean("show_name_tag", true);
+                         template.VisibleToCreatorOnly = reader.GetBoolean("visible_to_creator_only", true);
+                         template.NoExp = reader.GetBoolean("no_exp", true);
+-                        template.PetItemId = reader.GetInt32("pet_item_id", 0);
++                        template.PetItemId = reader.GetUInt32("pet_item_id", 0);
+                         template.BaseSkillId = reader.GetInt32("base_skill_id");
+                         template.TrackFriendship = reader.GetBoolean("track_friendship", true);
+                         template.Priest = reader.GetBoolean("priest", true);
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
+index 86c1bf8519..d404033c4e 100644
+--- a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
++++ b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
+@@ -10,14 +10,18 @@ public class SCAiAggroPacket : GamePacket
+     private readonly uint _npcId;
+     private readonly int _count;
+     private readonly uint _hostileUnitId;
+-    private readonly int _value;
++    private readonly int _summarizeDamage;
++    private readonly int _value2;
++    private readonly int _value3;
+ 
+-    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0) : base(SCOffsets.SCUnitAiAggroPacket, 5)
++    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0, int val2 = 0, int val3 = 0) : base(SCOffsets.SCAiAggroPacket, 5)
+     {
+         _npcId = npcId;
+         _count = count;
+         _hostileUnitId = hostileUnitId;
+-        _value = summarizeDamage;
++        _summarizeDamage = summarizeDamage;
++        _value2 = val2;
++        _value3 = val3;
      }
  
--        public void PostLoad()
--        {
--        }
-+    public void PostLoad()
-+    {
-+    }
- 
--        public IReadOnlySet<uint> GetTagsByTargetId(TagType tagType, uint ownerId)
-+    public IReadOnlySet<uint> GetTagsByTargetId(TagType tagType, uint ownerId)
-+    {
-+        var res = new HashSet<uint>();
-+        if (_tags.TryGetValue(tagType, out var tagDictionary))
+     public override PacketStream Write(PacketStream stream)
+@@ -28,9 +32,9 @@ public override PacketStream Write(PacketStream stream)
+         if (_count > 0)
          {
--            var res = new HashSet<uint>();
--            if (_tags.TryGetValue(tagType, out var tagDictionary))
-+            foreach (var (tagKey, tagOwners) in tagDictionary)
-             {
--                foreach (var (tagKey, tagOwners) in tagDictionary)
-+                if (tagOwners.Contains(ownerId))
-                 {
--                    if (tagOwners.Contains(ownerId))
--                    {
--                        res.Add(tagKey);
--                    }
-+                    res.Add(tagKey);
-                 }
+             stream.WriteBc(_hostileUnitId);
+-            stream.Write(_value); // value 
+-            stream.Write(0);   // value
+-            stream.Write(0);   // value
++            stream.Write(_summarizeDamage); // value1 
++            stream.Write(_value2);   // value2
++            stream.Write(_value3);   // value3
+             stream.Write((byte)135); // topFlags
+ 
+             /*
+diff --git a/AAEmu.Game/Models/Game/NPChar/Npc.cs b/AAEmu.Game/Models/Game/NPChar/Npc.cs
+index e05cd1cead..7f3dd3c8d9 100644
+--- a/AAEmu.Game/Models/Game/NPChar/Npc.cs
++++ b/AAEmu.Game/Models/Game/NPChar/Npc.cs
+@@ -1031,6 +1031,9 @@ public void AddUnitAggro(AggroKind kind, Unit unit, int amount)
+                 if (!player.Quests.IsQuestComplete(Template.EngageCombatGiveQuestId) && !player.Quests.HasQuest(Template.EngageCombatGiveQuestId))
+                     player.Quests.AddQuest(Template.EngageCombatGiveQuestId);
              }
--
--            return res;
++            
++            // Send initial hit packet as well
++            unit.SendPacketToPlayers([this, unit], new SCCombatFirstHitPacket(this.ObjId, unit.ObjId, 0));
          }
+ 
+         if (player == null)
+diff --git a/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs b/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
+index 104a136f41..19f5c2f416 100644
+--- a/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
++++ b/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
+@@ -30,7 +30,7 @@ public class NpcTemplate
+     public bool ShowNameTag { get; set; }
+     public bool VisibleToCreatorOnly { get; set; }
+     public bool NoExp { get; set; }
+-    public int PetItemId { get; set; }
++    public uint PetItemId { get; set; }
+     public int BaseSkillId { get; set; }
+     public bool TrackFriendship { get; set; }
+     public bool Priest { get; set; }
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
+index 00712ca6d1..6df45b7591 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
+@@ -67,7 +67,7 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
+         }
+ 
+         var value = (int)Rand.Next(min, max);
+-        npc.SendPacketToPlayers([caster, npc], new SCAiAggroPacket(npc.ObjId, 1, caster.ObjId, value));
++        npc.SendPacketToPlayers([caster, npc], new SCAiAggroPacket(npc.ObjId, 1, caster.ObjId, value, 0 , 0));
+         npc.AddUnitAggro(AggroKind.Damage, character, value);
+     }
+ }
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
+index a6ac0e9955..ab1c586a62 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
+@@ -416,12 +416,10 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
+             packetBuilder.AddPacket(packet);
+         else
+             trg.BroadcastPacket(packet, true);
+-        if (trg is Npc)
+-        {
+-            trg.SendPacketToPlayers([trg, caster], new SCAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage));
+-        }
+-        if (trg is Npc npc/* && npc.CurrentTarget != caster*/)
 +
-+        return res;
++        if (trg is Npc npc)
+         {
++            trg.SendPacketToPlayers([trg, caster], new SCAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage, 0, 0));
+             npc.OnDamageReceived((Unit)caster, value);
+         }
+ 
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
+index 843f9f493f..2f1ff32883 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
+@@ -35,5 +35,10 @@ public override void Execute(BaseUnit caster,
+                 player.Inventory.Bag.ConsumeItem(Items.Actions.ItemTaskType.SkillReagents, reagent.ItemId, reagent.Amount, null);
+             }
+         }
++        else if (casterObj is SkillItem item)
++        {
++            var player = (Character)caster;
++            player.Inventory.Bag.ConsumeItem(Items.Actions.ItemTaskType.SkillReagents, item.ItemTemplateId, 1, null);
++        }
+     }
+ }
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
+index 641794d893..d2ebd8aee9 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
+@@ -1,12 +1,17 @@
+ ﻿using System;
+-
++using AAEmu.Game.Core.Managers;
+ using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Models.Game.Items.Actions;
++using AAEmu.Game.Models.Game.NPChar;
+ using AAEmu.Game.Models.Game.Units;
++using AAEmu.Game.Models.Game.Units.Static;
+ 
+ namespace AAEmu.Game.Models.Game.Skills.Effects.SpecialEffects;
+ 
+ public class CapturePet : SpecialEffectAction
+ {
++    protected override SpecialType SpecialEffectActionType => SpecialType.CapturePet;
++    
+     public override void Execute(BaseUnit caster,
+         SkillCaster casterObj,
+         BaseUnit target,
+@@ -20,7 +25,54 @@ public override void Execute(BaseUnit caster,
+         int value3,
+         int value4)
+     {
+-        // TODO ...
+-        if (caster is Character) { Logger.Debug("Special effects: CapturePet value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4); }
++        // Only players are allowed to capture pets
++        if (caster is not Character player)
++            return; 
++
++        Logger.Debug("Special effects: CapturePet value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4);
++
++        // Need to grab the actual target from the buff owner itself, as target will be the player in this case
++        BaseUnit targetObject = null;
++        if (castObj is CastBuff castBuff)
++        {
++            targetObject = castBuff.Buff.Owner;
++        }
++        
++        if (targetObject is not Npc targetNpc)
++        {
++            Logger.Warn($"Special effects: CapturePet {player.Name} tried to capture a non-Npc");
++            return;
++        }
++        
++        // TODO: Verify Target Buffs
++        // 6675 Capture-able target (tag 1304)
++        
++        // TODO: Verify Target NPC Grade
++
++        // If valid target
++        if (targetNpc.Template.PetItemId > 0)
++        {
++            var itemTemplate = ItemManager.Instance.GetTemplate(targetNpc.Template.PetItemId);
++            if (itemTemplate == null)
++            {
++                player.SendErrorMessage(ErrorMessageType.BagInvalidItem);
++                return;
++            }
++            // And player can get the item
++            if (!player.Inventory.Bag.AcquireDefaultItem(ItemTaskType.CapturePet, targetNpc.Template.PetItemId, 1))
++            {
++                player.SendErrorMessage(ErrorMessageType.BagFull);
++                return;
++            }
++
++            // Capture (kill) the target
++            targetNpc.ReduceCurrentHp(player, targetNpc.MaxHp, KillReason.Capture);
++            // Immediately despawn it
++            targetNpc.DoDespawn(targetNpc);
++        }
++        else
++        {
++            player.SendMessage($"Unable to capture this target yet, take a screenshot of this, and inform the developers. NPC {targetNpc.TemplateId}");
++        }
      }
  }
