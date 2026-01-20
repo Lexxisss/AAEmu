@@ -1,155 +1,201 @@
-From d7f673b56a72d333edcb1202850d6ac8115968c3 Mon Sep 17 00:00:00 2001
+From b2b10b426b292e8dbb0789b19f839f3cecdce557 Mon Sep 17 00:00:00 2001
 From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Sun, 4 Aug 2024 21:32:51 +0300
-Subject: [PATCH] Merge errors fixed;
+Date: Tue, 6 Aug 2024 22:32:45 +0300
+Subject: [PATCH] [Game] Fixed starting quests launching: - now there are no
+ erroneous entries in the quest list;
 
+[Game] Added send SCScheduleItemUpdatePacket:
+- Divine clock is still not working.
 ---
- AAEmu.Game/Core/Managers/AccountManager.cs       |  6 ++----
- .../Core/Packets/C2G/CSInteractNPCPacket.cs      |  2 +-
- AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs   |  3 ++-
- .../Core/Packets/G2C/SCUnitAiAggroPacket.cs      | 16 ++++++++++------
- .../Models/Game/Skills/Effects/AggroEffect.cs    |  2 +-
- .../Models/Game/Skills/Effects/DamageEffect.cs   |  2 +-
- AAEmu.Game/Models/Game/Units/Unit.cs             |  2 +-
- 7 files changed, 18 insertions(+), 15 deletions(-)
+ AAEmu.Game/Core/Managers/TimedRewardsManager.cs  |  2 +-
+ AAEmu.Game/Core/Managers/World/WorldManager.cs   |  9 ++++++++-
+ .../Core/Packets/C2G/CSSelectCharacterPacket.cs  | 16 ++++------------
+ .../Core/Packets/Proxy/FinishStatePacket.cs      |  8 ++++----
+ .../Models/Game/Items/Actions/ItemTaskType.cs    |  3 ++-
+ AAEmu.Game/Models/Game/ScheduleItem.cs           |  2 +-
+ .../Characters/CharacterOnlineTrackingTask.cs    | 14 ++++++++++++++
+ 7 files changed, 34 insertions(+), 20 deletions(-)
 
-diff --git a/AAEmu.Game/Core/Managers/AccountManager.cs b/AAEmu.Game/Core/Managers/AccountManager.cs
-index 80a5587f72..a8165b7349 100644
---- a/AAEmu.Game/Core/Managers/AccountManager.cs
-+++ b/AAEmu.Game/Core/Managers/AccountManager.cs
-@@ -341,7 +341,7 @@ public void UpdateTickTimes(ulong accountId, DateTime newTime, bool updateLabor,
-     /// <param name="accountId"></param>
-     /// <param name="timeElapsed"></param>
-     /// <param name="timesTaken"></param>
--    public void UpdateDivineClock(uint accountId, uint timeElapsed, uint timesTaken)
-+    public void UpdateDivineClock(ulong accountId, uint timeElapsed, uint timesTaken)
-     {
-         object accLock;
-         lock (_locks)
-@@ -377,7 +377,7 @@ public void UpdateDivineClock(uint accountId, uint timeElapsed, uint timesTaken)
-     /// </summary>
-     /// <param name="accountId"></param>
-     /// <returns></returns>
--    public (uint, uint) GetDivineClock(uint accountId)
-+    public (uint, uint) GetDivineClock(ulong accountId)
-     {
-         var timeElapsed = 0u;
-         var timesTaken = 0u;
-@@ -415,6 +415,4 @@ public void UpdateDivineClock(uint accountId, uint timeElapsed, uint timesTaken)
+diff --git a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
+index db416388eb..0eaa9ed643 100644
+--- a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
++++ b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
+@@ -97,7 +97,7 @@ public void DoDailyAccountLogin(ulong accountId)
  
-         return (timeElapsed, timesTaken);
+         if (AppConfiguration.Instance.Loyalty.DailyLogin > 0)
+             AccountManager.Instance.AddLoyalty(accountId, AppConfiguration.Instance.Loyalty.DailyLogin);
+-        
++
+         AccountManager.Instance.UpdateDivineClock(accountId, 0, 0);
      }
--
--    
- }
-diff --git a/AAEmu.Game/Core/Packets/C2G/CSInteractNPCPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSInteractNPCPacket.cs
-index 6b1b22e430..c11bc15d3a 100644
---- a/AAEmu.Game/Core/Packets/C2G/CSInteractNPCPacket.cs
-+++ b/AAEmu.Game/Core/Packets/C2G/CSInteractNPCPacket.cs
-@@ -27,6 +27,6 @@ public override void Read(PacketStream stream)
-             Connection.ActiveChar.CurrentTarget = unit;
+ 
+diff --git a/AAEmu.Game/Core/Managers/World/WorldManager.cs b/AAEmu.Game/Core/Managers/World/WorldManager.cs
+index 2c51b4c65e..a5a2aeb670 100644
+--- a/AAEmu.Game/Core/Managers/World/WorldManager.cs
++++ b/AAEmu.Game/Core/Managers/World/WorldManager.cs
+@@ -1240,25 +1240,32 @@ public void OnPlayerJoin(Character character)
+     private void StartingFirstJourney(Character character)
+     {
+         var questId = 0u;
++        var sphereId = 0u;
+         switch (character.Race)
+         {
+             case Race.Nuian: // Nuian
+                 questId = 6839;
++                sphereId = 2321;
+                 break;
+             case Race.Dwarf: // Dwarf
+                 questId = 5811;
++                sphereId = 2613;
+                 break;
+             case Race.Elf: // Elf
+                 questId = 6840;
++                sphereId = 2322;
+                 break;
+             case Race.Hariharan: // Hariharan
+                 questId = 6842;
++                sphereId = 2324;
+                 break;
+             case Race.Ferre: // Ferre
+                 questId = 6841;
++                sphereId = 2323;
+                 break;
+             case Race.Warborn: // Warborn
+                 questId = 8228;
++                sphereId = 2600;
+                 break;
+             case Race.Fairy:
+                 break;
+@@ -1268,7 +1275,7 @@ private void StartingFirstJourney(Character character)
+         // showing it once
+         if (character.Updated - character.Created < TimeSpan.FromMinutes(1))
+         {
+-            character.Quests.AddQuest(questId);
++            character.Quests.AddQuestFromSphere(questId, sphereId);
          }
- 
--        Connection.SendPacket(new SCAiAggroPacket(objId, 0)); // TODO проверить count=1
-+        Connection.SendPacket(new SCUnitAiAggroPacket(objId, 0)); // TODO проверить count=1
      }
+ 
+diff --git a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
+index 09749330e4..afc5d24638 100644
+--- a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
+@@ -9,6 +9,7 @@
+ using AAEmu.Game.Core.Network.Game;
+ using AAEmu.Game.Core.Packets.G2C;
+ using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Models.Game.Items.Actions;
+ using AAEmu.Game.Models.Game.Skills;
+ using AAEmu.Game.Models.Game.Units;
+ using AAEmu.Game.Models.Game.Units.Route;
+@@ -64,18 +65,8 @@ public override void Read(PacketStream stream)
+             Connection.ActiveChar.Simulation = new Simulation(character);
+ 
+             // TODO: Fix the patron and auction house license buff issue
+-            if (Connection.ActiveChar is { } unit)
+-            {
+-                if (!unit.Buffs.CheckBuff((uint)SkillConstants.Patron)) //TODO Wrong place
+-                {
+-                    unit.Buffs.AddBuff(new Buff(unit, unit, SkillCaster.GetByType(SkillCasterType.Unit), SkillManager.Instance.GetBuffTemplate(8000011), null, System.DateTime.Now));
+-                }
+-
+-                if (!unit.Buffs.CheckBuff((uint)SkillConstants.AuctionLicense)) //TODO Wrong place
+-                {
+-                    unit.Buffs.AddBuff(new Buff(unit, unit, SkillCaster.GetByType(SkillCasterType.Unit), SkillManager.Instance.GetBuffTemplate(8000012), null, System.DateTime.Now));
+-                }
+-            }
++            Connection.ActiveChar.Buffs.AddBuff((uint)SkillConstants.Patron, Connection.ActiveChar);
++            Connection.ActiveChar.Buffs.AddBuff((uint)SkillConstants.AuctionLicense, Connection.ActiveChar);
+ 
+             Connection.SendPacket(new SCResidentInfoListPacket(ResidentManager.Instance.GetInfo()));
+             Connection.SendPacket(new SCCharacterStatePacket(character));
+@@ -126,6 +117,7 @@ public override void Read(PacketStream stream)
+             character.Breath = character.LungCapacity;
+ 
+             Connection.SendPacket(new SCScheduledEventStartedPacket());
++            Connection.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Unk136, [], []));
+ 
+             Connection.ActiveChar.OnZoneChange(0, Connection.ActiveChar.Transform.ZoneId);
+         }
+diff --git a/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs b/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
+index ff0a5f14eb..135df82c33 100644
+--- a/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
++++ b/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
+@@ -38,9 +38,9 @@ public override void Read(PacketStream stream)
+                 // Test URLs                                          // Original Trion values
+                 // Client treats these as folders and will add a trailing slash (/) with whatever it needs
+                 // For example, opening the Wiki would send http://localhost/aaemu/platform/login
+-                var authUrl = "http://localhost/aaemu/login";         // "https://session.draft.integration.triongames.priv";
+-                var platformUrl = "http://localhost/aaemu/platform";  // "http://archeage.draft.integration.triongames.priv/commerce/pruchase/credits/purchase-credits-flow.action";
+-                var commerceUrl = "http://localhost/aaemu/shop";      // "" ;
++                //var authUrl = "http://localhost/aaemu/login";         // "https://session.draft.integration.triongames.priv";
++                //var platformUrl = "http://localhost/aaemu/platform";  // "http://archeage.draft.integration.triongames.priv/commerce/pruchase/credits/purchase-credits-flow.action";
++                //var commerceUrl = "http://localhost/aaemu/shop";      // "" ;
+ 
+                 // It seems this packet can be ignored if you don't use the wiki/shop
+                 //Connection.SendPacket(new SCTrionConfigPacket(
+@@ -56,7 +56,7 @@ public override void Read(PacketStream stream)
+                         Connection.Payment.EndTime)
+                 );
+                 Connection.SendPacket(new SCChatSpamConfigPacket());
+-                Connection.SendPacket(new SCAccountAttributeConfigPacket([false, false, false]));
++                Connection.SendPacket(new SCAccountAttributeConfigPacket([false, true, false]));
+                 Connection.SendPacket(new SCLevelRestrictionConfigPacket(0, 10, 0, 10, 10, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])); // TODO - config files
+ 
+                 Connection.SendPacket(new SCTaxItemConfigPacket(0));
+diff --git a/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs b/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
+index 141a16e831..3405611af2 100644
+--- a/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
++++ b/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
+@@ -119,5 +119,6 @@ public enum ItemTaskType : byte
+     Sknize = 113,
+     ItemTaskThistimeUnpack = 114,
+     BuyPremiumService = 115,
+-    BuyAaPoint = 116
++    BuyAaPoint = 116,
++    Unk136 = 136
  }
-diff --git a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-index d404033c4e..934957cc5c 100644
---- a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-+++ b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-@@ -3,6 +3,7 @@
- 
- namespace AAEmu.Game.Core.Packets.G2C;
- 
-+// obsolete packet name
- public class SCAiAggroPacket : GamePacket
+diff --git a/AAEmu.Game/Models/Game/ScheduleItem.cs b/AAEmu.Game/Models/Game/ScheduleItem.cs
+index 39a5a81f89..b4d68f3197 100644
+--- a/AAEmu.Game/Models/Game/ScheduleItem.cs
++++ b/AAEmu.Game/Models/Game/ScheduleItem.cs
+@@ -7,7 +7,7 @@ public class ScheduleItem : PacketMarshaler
  {
-     public override PacketLogLevel LogLevel => PacketLogLevel.Off;
-@@ -14,7 +15,7 @@ public class SCAiAggroPacket : GamePacket
-     private readonly int _value2;
-     private readonly int _value3;
- 
--    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0, int val2 = 0, int val3 = 0) : base(SCOffsets.SCAiAggroPacket, 5)
-+    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0, int val2 = 0, int val3 = 0) : base(SCOffsets.SCUnitAiAggroPacket, 5)
-     {
-         _npcId = npcId;
-         _count = count;
-diff --git a/AAEmu.Game/Core/Packets/G2C/SCUnitAiAggroPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCUnitAiAggroPacket.cs
-index 1135401ade..b3cad3e984 100644
---- a/AAEmu.Game/Core/Packets/G2C/SCUnitAiAggroPacket.cs
-+++ b/AAEmu.Game/Core/Packets/G2C/SCUnitAiAggroPacket.cs
-@@ -8,14 +8,18 @@ public class SCUnitAiAggroPacket : GamePacket
-     private readonly uint _npcId;
-     private readonly int _count;
-     private readonly uint _hostileUnitId;
--    private readonly int _value;
-+    private readonly int _summarizeDamage;
-+    private readonly int _value2;
-+    private readonly int _value3;
- 
--    public SCUnitAiAggroPacket(uint npcId, int count, uint hostileUnitId=0, int summarizeDamage=0) : base(SCOffsets.SCUnitAiAggroPacket, 5)
-+    public SCUnitAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0, int val2 = 0, int val3 = 0) : base(SCOffsets.SCUnitAiAggroPacket, 5)
-     {
-         _npcId = npcId;
-         _count = count;
-         _hostileUnitId = hostileUnitId;
--        _value = summarizeDamage;
-+        _summarizeDamage = summarizeDamage;
-+        _value2 = val2;
-+        _value3 = val3;
-     }
+     public uint ItemTemplateId { get; set; }
+     public byte Gave { get; set; }
+-    public int Acumulated { get; set; }
++    public uint Acumulated { get; set; }
+     public DateTime Updated { get; set; }
  
      public override PacketStream Write(PacketStream stream)
-@@ -26,9 +30,9 @@ public override PacketStream Write(PacketStream stream)
-         if (_count > 0)
-         {
-             stream.WriteBc(_hostileUnitId);
--            stream.Write(_value); // value 
--            stream.Write(0);   // value
--            stream.Write(0);   // value
-+            stream.Write(_summarizeDamage); // value1 
-+            stream.Write(_value2);   // value2
-+            stream.Write(_value3);   // value3
-             stream.Write((byte)135); // topFlags
+diff --git a/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
+index b59e5e7850..e7fbe58667 100644
+--- a/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
++++ b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
+@@ -1,6 +1,8 @@
+ ﻿using System;
+ using AAEmu.Game.Core.Managers;
+ using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models.Game;
  
-             /*
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-index 6df45b7591..5eea079be0 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-@@ -67,7 +67,7 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
+ namespace AAEmu.Game.Models.Tasks.Characters;
+ 
+@@ -45,6 +47,18 @@ public override void Execute()
+ 
+             // TODO: Use lastSeconds and newSeconds as a comparison for triggering time played achievements
+             // TODO: Add divine clock feedback packets
++
++            if (time % 60 == 0)
++            {
++                var si = new ScheduleItem
++                {
++                    ItemTemplateId = 9000003,
++                    Gave = (byte)taken,
++                    Acumulated = time,
++                    Updated = DateTime.UtcNow
++                };
++                character.SendPacket(new SCScheduleItemUpdatePacket([si]));
++            }
          }
  
-         var value = (int)Rand.Next(min, max);
--        npc.SendPacketToPlayers([caster, npc], new SCAiAggroPacket(npc.ObjId, 1, caster.ObjId, value, 0 , 0));
-+        npc.SendPacketToPlayers([caster, npc], new SCUnitAiAggroPacket(npc.ObjId, 1, caster.ObjId, value, 0 , 0));
-         npc.AddUnitAggro(AggroKind.Damage, character, value);
-     }
- }
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-index ab1c586a62..ea4441c3cf 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-@@ -419,7 +419,7 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
- 
-         if (trg is Npc npc)
-         {
--            trg.SendPacketToPlayers([trg, caster], new SCAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage, 0, 0));
-+            trg.SendPacketToPlayers([trg, caster], new SCUnitAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage, 0, 0));
-             npc.OnDamageReceived((Unit)caster, value);
-         }
- 
-diff --git a/AAEmu.Game/Models/Game/Units/Unit.cs b/AAEmu.Game/Models/Game/Units/Unit.cs
-index 9486e142c2..5053b6c4fc 100644
---- a/AAEmu.Game/Models/Game/Units/Unit.cs
-+++ b/AAEmu.Game/Models/Game/Units/Unit.cs
-@@ -538,7 +538,7 @@ public virtual void DoDie(BaseUnit killer, KillReason killReason)
- 
-         if (CurrentTarget != null)
-         {
--            killer.SendPacketToPlayers([this, killer], new SCAiAggroPacket(killer.ObjId, 0));
-+            killer.SendPacketToPlayers([this, killer], new SCUnitAiAggroPacket(killer.ObjId, 0));
- 
-             if (killer is Unit killerUnit)
-             {
+         lock (_lock)
