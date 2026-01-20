@@ -1,233 +1,307 @@
-From b57a5109691b45df276ad6ec90b37e1639d7e3ed Mon Sep 17 00:00:00 2001
+From 42435580bb8b45e2334b54c7445de3da376ae81b Mon Sep 17 00:00:00 2001
 From: ZeromusXYZ <zeromus.xyz@gmail.com>
-Date: Sat, 3 Aug 2024 22:04:25 +0200
-Subject: [PATCH] [Game] Added support for taming nets (#1060)
+Date: Sun, 4 Aug 2024 19:58:55 +0200
+Subject: [PATCH] [Game] Added online time tracking (#1061)
 
-* [Game] Added support for taming nets
-
-- Implemented the ``CapturePet`` special effect (with too many magic numbers)
-- Added a missing ``SCCombatFirstHitPacket`` on initial aggro so the NPC is marked as "occupied" by the client.
-- Added consumption of source item if reagents list is empty with a ``ApplyReagent`` effect.
-
-* [Game] Removed magic numbers for CapturePet
-
-Co-Authored-By: @mgpreson
-This PR closes #618
+- Added fields to MYSQL tables to track online time
+- Added ``CharacterOnlineTrackingTask`` for handling the updating of time (default precision for this is 5 seconds)
 ---
- .../Core/Managers/UnitManagers/NpcManager.cs  |  2 +-
- .../Core/Packets/G2C/SCAiAggroPacket.cs       | 16 +++--
- AAEmu.Game/Models/Game/NPChar/Npc.cs          |  3 +
- AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs  |  2 +-
- .../Models/Game/Skills/Effects/AggroEffect.cs |  2 +-
- .../Game/Skills/Effects/DamageEffect.cs       |  8 +--
- .../Effects/SpecialEffects/ApplyReagents.cs   |  5 ++
- .../Effects/SpecialEffects/CapturePet.cs      | 58 ++++++++++++++++++-
- 8 files changed, 79 insertions(+), 17 deletions(-)
+ AAEmu.Game/Core/Managers/AccountManager.cs    | 83 +++++++++++++++++++
+ .../Core/Managers/TimedRewardsManager.cs      |  2 +
+ .../Managers/UnitManagers/CharacterManager.cs |  9 ++
+ AAEmu.Game/GameService.cs                     |  1 +
+ AAEmu.Game/Models/Game/Char/Character.cs      |  9 +-
+ .../Characters/CharacterOnlineTrackingTask.cs | 55 ++++++++++++
+ SQL/aaemu_game.sql                            |  3 +
+ .../2024-08-04_aaemu_game_online_time.sql     |  9 ++
+ 8 files changed, 169 insertions(+), 2 deletions(-)
+ create mode 100644 AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
+ create mode 100644 SQL/updates/2024-08-04_aaemu_game_online_time.sql
 
-diff --git a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
-index 24b2d79a2b..b06511f787 100644
---- a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
-+++ b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
-@@ -538,7 +538,7 @@ public void Load()
-                         template.ShowNameTag = reader.GetBoolean("show_name_tag", true);
-                         template.VisibleToCreatorOnly = reader.GetBoolean("visible_to_creator_only", true);
-                         template.NoExp = reader.GetBoolean("no_exp", true);
--                        template.PetItemId = reader.GetInt32("pet_item_id", 0);
-+                        template.PetItemId = reader.GetUInt32("pet_item_id", 0);
-                         template.BaseSkillId = reader.GetInt32("base_skill_id");
-                         template.TrackFriendship = reader.GetBoolean("track_friendship", true);
-                         template.Priest = reader.GetBoolean("priest", true);
-diff --git a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-index 86c1bf8519..d404033c4e 100644
---- a/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-+++ b/AAEmu.Game/Core/Packets/G2C/SCAiAggroPacket.cs
-@@ -10,14 +10,18 @@ public class SCAiAggroPacket : GamePacket
-     private readonly uint _npcId;
-     private readonly int _count;
-     private readonly uint _hostileUnitId;
--    private readonly int _value;
-+    private readonly int _summarizeDamage;
-+    private readonly int _value2;
-+    private readonly int _value3;
- 
--    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0) : base(SCOffsets.SCUnitAiAggroPacket, 5)
-+    public SCAiAggroPacket(uint npcId, int count, uint hostileUnitId = 0, int summarizeDamage = 0, int val2 = 0, int val3 = 0) : base(SCOffsets.SCAiAggroPacket, 5)
-     {
-         _npcId = npcId;
-         _count = count;
-         _hostileUnitId = hostileUnitId;
--        _value = summarizeDamage;
-+        _summarizeDamage = summarizeDamage;
-+        _value2 = val2;
-+        _value3 = val3;
-     }
- 
-     public override PacketStream Write(PacketStream stream)
-@@ -28,9 +32,9 @@ public override PacketStream Write(PacketStream stream)
-         if (_count > 0)
-         {
-             stream.WriteBc(_hostileUnitId);
--            stream.Write(_value); // value 
--            stream.Write(0);   // value
--            stream.Write(0);   // value
-+            stream.Write(_summarizeDamage); // value1 
-+            stream.Write(_value2);   // value2
-+            stream.Write(_value3);   // value3
-             stream.Write((byte)135); // topFlags
- 
-             /*
-diff --git a/AAEmu.Game/Models/Game/NPChar/Npc.cs b/AAEmu.Game/Models/Game/NPChar/Npc.cs
-index e05cd1cead..7f3dd3c8d9 100644
---- a/AAEmu.Game/Models/Game/NPChar/Npc.cs
-+++ b/AAEmu.Game/Models/Game/NPChar/Npc.cs
-@@ -1031,6 +1031,9 @@ public void AddUnitAggro(AggroKind kind, Unit unit, int amount)
-                 if (!player.Quests.IsQuestComplete(Template.EngageCombatGiveQuestId) && !player.Quests.HasQuest(Template.EngageCombatGiveQuestId))
-                     player.Quests.AddQuest(Template.EngageCombatGiveQuestId);
+diff --git a/AAEmu.Game/Core/Managers/AccountManager.cs b/AAEmu.Game/Core/Managers/AccountManager.cs
+index fbf6239b52..80a5587f72 100644
+--- a/AAEmu.Game/Core/Managers/AccountManager.cs
++++ b/AAEmu.Game/Core/Managers/AccountManager.cs
+@@ -334,4 +334,87 @@ public void UpdateTickTimes(ulong accountId, DateTime newTime, bool updateLabor,
              }
-+            
-+            // Send initial hit packet as well
-+            unit.SendPacketToPlayers([this, unit], new SCCombatFirstHitPacket(this.ObjId, unit.ObjId, 0));
          }
- 
-         if (player == null)
-diff --git a/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs b/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
-index 104a136f41..19f5c2f416 100644
---- a/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
-+++ b/AAEmu.Game/Models/Game/NPChar/NpcTemplate.cs
-@@ -30,7 +30,7 @@ public class NpcTemplate
-     public bool ShowNameTag { get; set; }
-     public bool VisibleToCreatorOnly { get; set; }
-     public bool NoExp { get; set; }
--    public int PetItemId { get; set; }
-+    public uint PetItemId { get; set; }
-     public int BaseSkillId { get; set; }
-     public bool TrackFriendship { get; set; }
-     public bool Priest { get; set; }
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-index 00712ca6d1..6df45b7591 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/AggroEffect.cs
-@@ -67,7 +67,7 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
-         }
- 
-         var value = (int)Rand.Next(min, max);
--        npc.SendPacketToPlayers([caster, npc], new SCAiAggroPacket(npc.ObjId, 1, caster.ObjId, value));
-+        npc.SendPacketToPlayers([caster, npc], new SCAiAggroPacket(npc.ObjId, 1, caster.ObjId, value, 0 , 0));
-         npc.AddUnitAggro(AggroKind.Damage, character, value);
      }
- }
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-index a6ac0e9955..ab1c586a62 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/DamageEffect.cs
-@@ -416,12 +416,10 @@ public override void Apply(BaseUnit caster, SkillCaster casterObj, BaseUnit targ
-             packetBuilder.AddPacket(packet);
-         else
-             trg.BroadcastPacket(packet, true);
--        if (trg is Npc)
--        {
--            trg.SendPacketToPlayers([trg, caster], new SCAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage));
--        }
--        if (trg is Npc npc/* && npc.CurrentTarget != caster*/)
 +
-+        if (trg is Npc npc)
-         {
-+            trg.SendPacketToPlayers([trg, caster], new SCAiAggroPacket(trg.ObjId, 1, caster.ObjId, ((Unit)caster).SummarizeDamage, 0, 0));
-             npc.OnDamageReceived((Unit)caster, value);
-         }
- 
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
-index 843f9f493f..2f1ff32883 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/ApplyReagents.cs
-@@ -35,5 +35,10 @@ public override void Execute(BaseUnit caster,
-                 player.Inventory.Bag.ConsumeItem(Items.Actions.ItemTaskType.SkillReagents, reagent.ItemId, reagent.Amount, null);
-             }
-         }
-+        else if (casterObj is SkillItem item)
++    /// <summary>
++    /// Updates the divine_clock_time and divine_clock_taken values for given account
++    /// </summary>
++    /// <param name="accountId"></param>
++    /// <param name="timeElapsed"></param>
++    /// <param name="timesTaken"></param>
++    public void UpdateDivineClock(uint accountId, uint timeElapsed, uint timesTaken)
++    {
++        object accLock;
++        lock (_locks)
 +        {
-+            var player = (Character)caster;
-+            player.Inventory.Bag.ConsumeItem(Items.Actions.ItemTaskType.SkillReagents, item.ItemTemplateId, 1, null);
++            if (!_locks.TryGetValue(accountId, out accLock))
++            {
++                accLock = new object();
++                _locks.Add(accountId, accLock);
++            }
 +        }
-     }
- }
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
-index 641794d893..d2ebd8aee9 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/CapturePet.cs
-@@ -1,12 +1,17 @@
- ﻿using System;
--
-+using AAEmu.Game.Core.Managers;
- using AAEmu.Game.Models.Game.Char;
-+using AAEmu.Game.Models.Game.Items.Actions;
-+using AAEmu.Game.Models.Game.NPChar;
- using AAEmu.Game.Models.Game.Units;
-+using AAEmu.Game.Models.Game.Units.Static;
- 
- namespace AAEmu.Game.Models.Game.Skills.Effects.SpecialEffects;
- 
- public class CapturePet : SpecialEffectAction
- {
-+    protected override SpecialType SpecialEffectActionType => SpecialType.CapturePet;
++        lock (accLock)
++        {
++            try
++            {
++                using var connection = MySQL.CreateConnection();
++                using var command = connection.CreateCommand();
++                command.CommandText = "UPDATE accounts SET divine_clock_time = @divine_clock_time , divine_clock_taken = @divine_clock_taken WHERE account_id = @account_id";
++                command.Parameters.AddWithValue("@account_id", accountId);
++                command.Parameters.AddWithValue("@divine_clock_time", timeElapsed);
++                command.Parameters.AddWithValue("@divine_clock_taken", timesTaken);
++                command.Prepare();
++                command.ExecuteNonQuery();
++            }
++            catch (Exception e)
++            {
++                Logger.Error($"{e.Message}\n{e.StackTrace}");
++            }
++        }
++    }
++
++    /// <summary>
++    /// Returns the divine_clock_time and divine_clock_taken values for given account
++    /// </summary>
++    /// <param name="accountId"></param>
++    /// <returns></returns>
++    public (uint, uint) GetDivineClock(uint accountId)
++    {
++        var timeElapsed = 0u;
++        var timesTaken = 0u;
++        object accLock;
++        lock (_locks)
++        {
++            if (!_locks.TryGetValue(accountId, out accLock))
++            {
++                accLock = new object();
++                _locks.Add(accountId, accLock);
++            }
++        }
++        lock (accLock)
++        {
++            try
++            {
++                using var connection = MySQL.CreateConnection();
++                using var command = connection.CreateCommand();
++                command.CommandText = "SELECT account_id, divine_clock_time, divine_clock_taken FROM accounts WHERE account_id = @account_id";
++                command.Parameters.AddWithValue("@account_id", accountId);
++                command.Prepare();
++                using var reader = command.ExecuteReader();
++                if (reader.Read())
++                {
++                    timeElapsed = reader.GetUInt32("divine_clock_time");
++                    timesTaken = reader.GetUInt32("divine_clock_taken");
++                }
++                reader.Close();
++            }
++            catch (Exception e)
++            {
++                Logger.Error($"{e.Message}\n{e.StackTrace}");
++            }
++        }
++
++        return (timeElapsed, timesTaken);
++    }
++
 +    
-     public override void Execute(BaseUnit caster,
-         SkillCaster casterObj,
-         BaseUnit target,
-@@ -20,7 +25,54 @@ public override void Execute(BaseUnit caster,
-         int value3,
-         int value4)
-     {
--        // TODO ...
--        if (caster is Character) { Logger.Debug("Special effects: CapturePet value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4); }
-+        // Only players are allowed to capture pets
-+        if (caster is not Character player)
-+            return; 
-+
-+        Logger.Debug("Special effects: CapturePet value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4);
-+
-+        // Need to grab the actual target from the buff owner itself, as target will be the player in this case
-+        BaseUnit targetObject = null;
-+        if (castObj is CastBuff castBuff)
-+        {
-+            targetObject = castBuff.Buff.Owner;
-+        }
-+        
-+        if (targetObject is not Npc targetNpc)
-+        {
-+            Logger.Warn($"Special effects: CapturePet {player.Name} tried to capture a non-Npc");
-+            return;
-+        }
-+        
-+        // TODO: Verify Target Buffs
-+        // 6675 Capture-able target (tag 1304)
-+        
-+        // TODO: Verify Target NPC Grade
-+
-+        // If valid target
-+        if (targetNpc.Template.PetItemId > 0)
-+        {
-+            var itemTemplate = ItemManager.Instance.GetTemplate(targetNpc.Template.PetItemId);
-+            if (itemTemplate == null)
-+            {
-+                player.SendErrorMessage(ErrorMessageType.BagInvalidItem);
-+                return;
-+            }
-+            // And player can get the item
-+            if (!player.Inventory.Bag.AcquireDefaultItem(ItemTaskType.CapturePet, targetNpc.Template.PetItemId, 1))
-+            {
-+                player.SendErrorMessage(ErrorMessageType.BagFull);
-+                return;
-+            }
-+
-+            // Capture (kill) the target
-+            targetNpc.ReduceCurrentHp(player, targetNpc.MaxHp, KillReason.Capture);
-+            // Immediately despawn it
-+            targetNpc.DoDespawn(targetNpc);
-+        }
-+        else
-+        {
-+            player.SendMessage($"Unable to capture this target yet, take a screenshot of this, and inform the developers. NPC {targetNpc.TemplateId}");
-+        }
-     }
  }
+diff --git a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
+index 5ed09b62c9..db416388eb 100644
+--- a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
++++ b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
+@@ -97,6 +97,8 @@ public void DoDailyAccountLogin(ulong accountId)
+ 
+         if (AppConfiguration.Instance.Loyalty.DailyLogin > 0)
+             AccountManager.Instance.AddLoyalty(accountId, AppConfiguration.Instance.Loyalty.DailyLogin);
++        
++        AccountManager.Instance.UpdateDivineClock(accountId, 0, 0);
+     }
+ 
+     public void AddOfflineLabor(GameConnection connection, DateTime lastLoginTime, short currentLabor)
+diff --git a/AAEmu.Game/Core/Managers/UnitManagers/CharacterManager.cs b/AAEmu.Game/Core/Managers/UnitManagers/CharacterManager.cs
+index f9f84c81c9..e287bdc28b 100644
+--- a/AAEmu.Game/Core/Managers/UnitManagers/CharacterManager.cs
++++ b/AAEmu.Game/Core/Managers/UnitManagers/CharacterManager.cs
+@@ -928,4 +928,13 @@ public bool IsCharacterPendingDeletion(string name)
+ 
+         return false;
+     }
++
++    /// <summary>
++    /// Starts the tracker for online time
++    /// </summary>
++    public void StartOnlineTracking()
++    {
++        var onlineTrackerTasks = new CharacterOnlineTrackingTask();
++        TaskManager.Instance.Schedule(onlineTrackerTasks, TimeSpan.Zero, CharacterOnlineTrackingTask.CheckPrecision);
++    }
+ }
+diff --git a/AAEmu.Game/GameService.cs b/AAEmu.Game/GameService.cs
+index c3a27d159c..d14beef3c0 100644
+--- a/AAEmu.Game/GameService.cs
++++ b/AAEmu.Game/GameService.cs
+@@ -221,6 +221,7 @@ public async Task StartAsync(CancellationToken cancellationToken)
+         WorldManager.Instance.StartPhysics();
+ 
+         CharacterManager.CheckForDeletedCharacters();
++        CharacterManager.Instance.StartOnlineTracking();
+ 
+         GameNetwork.Instance.Start();
+         StreamNetwork.Instance.Start();
+diff --git a/AAEmu.Game/Models/Game/Char/Character.cs b/AAEmu.Game/Models/Game/Char/Character.cs
+index 77262fcbd9..0d7499b47d 100644
+--- a/AAEmu.Game/Models/Game/Char/Character.cs
++++ b/AAEmu.Game/Models/Game/Char/Character.cs
+@@ -1757,6 +1757,8 @@ public bool IsDrowning
+         get { return (Breath <= 0); }
+     }
+ 
++    public TimeSpan OnlineTime { get; set; } = TimeSpan.Zero;
++
+     public override void ReduceCurrentHp(BaseUnit attacker, int value, KillReason killReason = KillReason.Damage)
+     {
+         if (AppConfiguration.Instance.World.GodMode)
+@@ -2054,6 +2056,7 @@ public static Character Load(MySqlConnection connection, uint characterId, ulong
+                     character.Created = reader.GetDateTime("created_at");
+                     character.Updated = reader.GetDateTime("updated_at");
+                     character.ReturnDistrictId = reader.GetUInt32("return_district");
++                    character.OnlineTime = TimeSpan.FromSeconds(reader.GetUInt32("online_time"));
+ 
+                     character.Inventory = new Inventory(character);
+ 
+@@ -2170,6 +2173,7 @@ public static Character Load(MySqlConnection connection, uint characterId)
+                     character.Created = reader.GetDateTime("created_at");
+                     character.Updated = reader.GetDateTime("updated_at");
+                     character.ReturnDistrictId = reader.GetUInt32("return_district");
++                    character.OnlineTime = TimeSpan.FromSeconds(reader.GetUInt32("online_time"));
+ 
+                     character.Inventory = new Inventory(character);
+ 
+@@ -2396,7 +2400,7 @@ public bool Save(MySqlConnection connection, MySqlTransaction transaction)
+                     "`faction_id`,`faction_name`,`expedition_id`,`family`,`dead_count`,`dead_time`,`rez_wait_duration`,`rez_time`,`rez_penalty_duration`,`leave_time`," +
+                     "`money`,`money2`,`honor_point`,`vocation_point`,`crime_point`,`crime_record`,`jury_point`," +
+                     "`delete_request_time`,`transfer_request_time`,`delete_time`,`auto_use_aapoint`,`prev_point`,`point`,`gift`," +
+-                    "`num_inv_slot`,`num_bank_slot`,`expanded_expert`,`slots`,`created_at`,`updated_at`,`return_district`" +
++                    "`num_inv_slot`,`num_bank_slot`,`expanded_expert`,`slots`,`created_at`,`updated_at`,`return_district`,`online_time`" +
+                     ") VALUES (" +
+                     "@id,@account_id,@name,@access_level,@race,@gender,@unit_model_params,@level,@experience,@recoverable_exp," +
+                     "@hp,@mp,@consumed_lp,@ability1,@ability2,@ability3," +
+@@ -2404,7 +2408,7 @@ public bool Save(MySqlConnection connection, MySqlTransaction transaction)
+                     "@faction_id,@faction_name,@expedition_id,@family,@dead_count,@dead_time,@rez_wait_duration,@rez_time,@rez_penalty_duration,@leave_time," +
+                     "@money,@money2,@honor_point,@vocation_point,@crime_point,@crime_record,@jury_point," +
+                     "@delete_request_time,@transfer_request_time,@delete_time,@auto_use_aapoint,@prev_point,@point,@gift," +
+-                    "@num_inv_slot,@num_bank_slot,@expanded_expert,@slots,@created_at,@updated_at,@return_district)";
++                    "@num_inv_slot,@num_bank_slot,@expanded_expert,@slots,@created_at,@updated_at,@return_district,@online_time)";
+ 
+                 command.Parameters.AddWithValue("@id", Id);
+                 command.Parameters.AddWithValue("@account_id", AccountId);
+@@ -2463,6 +2467,7 @@ public bool Save(MySqlConnection connection, MySqlTransaction transaction)
+                 command.Parameters.AddWithValue("@created_at", Created);
+                 command.Parameters.AddWithValue("@updated_at", Updated);
+                 command.Parameters.AddWithValue("@return_district", ReturnDistrictId);
++                command.Parameters.AddWithValue("@online_time", OnlineTime.TotalSeconds);
+                 command.ExecuteNonQuery();
+             }
+ 
+diff --git a/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
+new file mode 100644
+index 0000000000..b59e5e7850
+--- /dev/null
++++ b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
+@@ -0,0 +1,55 @@
++﻿using System;
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.World;
++
++namespace AAEmu.Game.Models.Tasks.Characters;
++
++public class CharacterOnlineTrackingTask : Task
++{
++    public static TimeSpan CheckPrecision { get; set; } = TimeSpan.FromSeconds(5);
++    private DateTime LastCheck { get; set; }
++    private readonly object _lock = new();
++    private bool Busy { get; set; }
++
++    public CharacterOnlineTrackingTask()
++    {
++        LastCheck = DateTime.UtcNow;
++        lock (_lock)
++            Busy = false;
++    }
++
++    public override void Execute()
++    {
++        lock (_lock)
++        {
++            if (Busy)
++                return;
++            Busy = true;
++        }
++        var delta = DateTime.UtcNow - LastCheck;
++        LastCheck = DateTime.UtcNow;
++
++        // Loop all online players
++        foreach (var character in WorldManager.Instance.GetAllCharacters())
++        {
++            // Update character time
++            var lastSeconds = Math.Floor(character.OnlineTime.TotalSeconds);
++            character.OnlineTime += delta;
++            var newSeconds = Math.Floor(character.OnlineTime.TotalSeconds);
++            var deltaSeconds = (uint)(newSeconds - lastSeconds);
++
++            // Update Account Divine Clock time
++            var (time, taken) = AccountManager.Instance.GetDivineClock(character.AccountId);
++            time += deltaSeconds;
++            AccountManager.Instance.UpdateDivineClock(character.AccountId, time, taken);
++
++            // TODO: Use lastSeconds and newSeconds as a comparison for triggering time played achievements
++            // TODO: Add divine clock feedback packets
++        }
++
++        lock (_lock)
++        {
++            Busy = false;
++        }
++    }
++}
+diff --git a/SQL/aaemu_game.sql b/SQL/aaemu_game.sql
+index faec13b989..0811926ace 100644
+--- a/SQL/aaemu_game.sql
++++ b/SQL/aaemu_game.sql
+@@ -30,6 +30,8 @@ CREATE TABLE `accounts` (
+   `last_labor_tick` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   `last_credits_tick` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   `last_loyalty_tick` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  `divine_clock_time` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Time that has been passed already',
++  `divine_clock_taken` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Number of clicks taken today',
+   PRIMARY KEY (`account_id`)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='Account specific values not related to login';
+ 
+@@ -163,6 +165,7 @@ CREATE TABLE `characters` (
+   `updated_at` datetime(0) NOT NULL DEFAULT '0001-01-01 00:00:00',
+   `deleted` int(11) NOT NULL DEFAULT 0,
+   `return_district` int(11) NOT NULL DEFAULT 0,
++  `online_time` INT(11) NOT NULL DEFAULT 0 COMMENT 'Time that the character has been online',
+   PRIMARY KEY (`id`, `account_id`) USING BTREE
+ ) ENGINE = InnoDB CHARACTER SET = utf8 COLLATE = utf8_general_ci COMMENT = 'Basic player character data' ROW_FORMAT = DYNAMIC;
+ 
+diff --git a/SQL/updates/2024-08-04_aaemu_game_online_time.sql b/SQL/updates/2024-08-04_aaemu_game_online_time.sql
+new file mode 100644
+index 0000000000..b20a055cf2
+--- /dev/null
++++ b/SQL/updates/2024-08-04_aaemu_game_online_time.sql
+@@ -0,0 +1,9 @@
++-- --------------------------------------------
++-- Add Online tracking
++-- --------------------------------------------
++ALTER TABLE `characters`
++	ADD COLUMN `online_time` INT(11) NOT NULL DEFAULT '0' COMMENT 'Time that the character has been online' AFTER `return_district`;	
++	
++ALTER TABLE `accounts`
++	ADD COLUMN `divine_clock_time` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Time that has been passed already' AFTER `last_loyalty_tick`,
++	ADD COLUMN `divine_clock_taken` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Number of clicks taken today' AFTER `divine_clock_time`;
