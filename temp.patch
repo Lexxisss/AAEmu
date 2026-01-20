@@ -1,35 +1,86 @@
-From f5f8eaf242f2c9824991f9a78d6bc816becc6a54 Mon Sep 17 00:00:00 2001
+From 8d3604429ee6ed44e4fa4b14e082ee2ab620c52a Mon Sep 17 00:00:00 2001
 From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Tue, 30 Jul 2024 23:20:16 +0300
-Subject: [PATCH] Merge errors fixed;
+Date: Wed, 31 Jul 2024 12:27:49 +0300
+Subject: [PATCH] Merge errors fixed; Enabled movement Forest keeper Arthtur.
 
 ---
- AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs  | 2 +-
- AAEmu.Game/Data/Worlds/main_world/npc_spawns.json | 1 +
- 2 files changed, 2 insertions(+), 1 deletion(-)
+ .../Data/Path/NuiForestkeeperArthur.path      |  9 +++----
+ .../Data/Worlds/main_world/npc_spawns.json    |  1 +
+ AAEmu.Game/GameData/TagsGameData.cs           | 25 +++++++++----------
+ 3 files changed, 16 insertions(+), 19 deletions(-)
 
-diff --git a/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs b/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-index 7acdcf41b..ff0779d37 100644
---- a/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-+++ b/AAEmu.Game/Core/Packets/G2C/SCUnitStatePacket.cs
-@@ -625,7 +625,7 @@ public override PacketStream Write(PacketStream stream)
-         var badBuffs = new List<Buff>();
-         var hiddenBuffs = new List<Buff>();
- 
--        _unit.Buffs.GetAllBuffs(goodBuffs, badBuffs, hiddenBuffs);
-+        _unit.Buffs.GetAllBuffs(goodBuffs, badBuffs, hiddenBuffs, false);
- 
-         stream.Write((byte)goodBuffs.Count); // TODO max 32
-         foreach (var buff in goodBuffs)
+diff --git a/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path b/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
+index abb67264ce..203267f06e 100644
+--- a/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
++++ b/AAEmu.Game/Data/Path/NuiForestkeeperArthur.path
+@@ -1,6 +1,6 @@
+-|15530.29|14841.57|138.9546|
+-|15530.29|14841.57|138.9546|
+-|15530.29|14841.57|138.9546|
++Speed|15530.29|14841.57|138.9546|1.5
++ActorFlags|15530.29|14841.57|138.9546|5
++EnableLoop|15530.29|14841.57|138.9546|
+ |15527.59|14845.04|139.5038|
+ |15524.53|14848.95|139.994|
+ |15521.39|14852.82|140.4202|
+@@ -25,6 +25,3 @@
+ |15435.43|14902.52|143.3404|
+ |15430.37|14902.95|143.2513|
+ |15429.31|14903.04|143.2393|
+-|15429.31|14903.04|143.2393|
+-|15429.31|14903.04|143.2393|
+-|15429.31|14903.04|143.2393|
 diff --git a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-index 145b844e5..259a5cfdb 100644
+index 259a5cfdb5..a92c0b3124 100644
 --- a/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
 +++ b/AAEmu.Game/Data/Worlds/main_world/npc_spawns.json
-@@ -230070,6 +230070,7 @@
+@@ -107324,6 +107324,7 @@
      "Id": 0,
-     "UnitId": 8123,
-     "Title": "Farkrag the Wanderer",
-+    "FollowPath": "falcorth_farkrag",
+     "UnitId": 11999,
+     "Title": "Forest Keeper Arthur",
++    "FollowPath": "NuiForestkeeperArthur",
      "Position": {
-       "X": 23719.08,
-       "Y": 9449.88,
+       "X": 15547.53,
+       "Y": 14808.13,
+diff --git a/AAEmu.Game/GameData/TagsGameData.cs b/AAEmu.Game/GameData/TagsGameData.cs
+index 533244f334..fbcc7fba99 100644
+--- a/AAEmu.Game/GameData/TagsGameData.cs
++++ b/AAEmu.Game/GameData/TagsGameData.cs
+@@ -128,25 +128,24 @@ public void Load(SqliteConnection connection, SqliteConnection connection2)
+         #endregion
+     }
+ 
+-        public void PostLoad()
+-        {
+-        }
++    public void PostLoad()
++    {
++    }
+ 
+-        public IReadOnlySet<uint> GetTagsByTargetId(TagType tagType, uint ownerId)
++    public IReadOnlySet<uint> GetTagsByTargetId(TagType tagType, uint ownerId)
++    {
++        var res = new HashSet<uint>();
++        if (_tags.TryGetValue(tagType, out var tagDictionary))
+         {
+-            var res = new HashSet<uint>();
+-            if (_tags.TryGetValue(tagType, out var tagDictionary))
++            foreach (var (tagKey, tagOwners) in tagDictionary)
+             {
+-                foreach (var (tagKey, tagOwners) in tagDictionary)
++                if (tagOwners.Contains(ownerId))
+                 {
+-                    if (tagOwners.Contains(ownerId))
+-                    {
+-                        res.Add(tagKey);
+-                    }
++                    res.Add(tagKey);
+                 }
+             }
+-
+-            return res;
+         }
++
++        return res;
+     }
+ }
