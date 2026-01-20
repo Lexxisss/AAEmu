@@ -1,201 +1,141 @@
-From b2b10b426b292e8dbb0789b19f839f3cecdce557 Mon Sep 17 00:00:00 2001
+From 678a8ce5e0626e235bdf1af346a018ef0d459a98 Mon Sep 17 00:00:00 2001
 From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Tue, 6 Aug 2024 22:32:45 +0300
-Subject: [PATCH] [Game] Fixed starting quests launching: - now there are no
- erroneous entries in the quest list;
+Date: Wed, 7 Aug 2024 17:13:00 +0300
+Subject: [PATCH] [Game][Packets] Added the SCAccountAttribute2Packet packet:
+ In addition, I transferred the sending of the SCScheduledEventStartedPacket
+ packet from CSSelectCharacterPacket to CSNotifyInGameCompletedPacket, so that
+ the event message is visible on the screen (for example, double exp, etc.).
+ Added sending a SCChatMessagePacket with a welcome message for logging into
+ Archeage.
 
-[Game] Added send SCScheduleItemUpdatePacket:
-- Divine clock is still not working.
 ---
- AAEmu.Game/Core/Managers/TimedRewardsManager.cs  |  2 +-
- AAEmu.Game/Core/Managers/World/WorldManager.cs   |  9 ++++++++-
- .../Core/Packets/C2G/CSSelectCharacterPacket.cs  | 16 ++++------------
- .../Core/Packets/Proxy/FinishStatePacket.cs      |  8 ++++----
- .../Models/Game/Items/Actions/ItemTaskType.cs    |  3 ++-
- AAEmu.Game/Models/Game/ScheduleItem.cs           |  2 +-
- .../Characters/CharacterOnlineTrackingTask.cs    | 14 ++++++++++++++
- 7 files changed, 34 insertions(+), 20 deletions(-)
+ .../C2G/CSNotifyInGameCompletedPacket.cs      |  5 +++
+ .../Packets/C2G/CSSelectCharacterPacket.cs    |  4 +-
+ .../Packets/G2C/SCAccountAttribute2Packet.cs  | 37 +++++++++++++++++++
+ AAEmu.Game/Core/Packets/G2C/SCOffsets.cs      |  2 +-
+ .../Characters/CharacterOnlineTrackingTask.cs |  3 ++
+ 5 files changed, 47 insertions(+), 4 deletions(-)
+ create mode 100644 AAEmu.Game/Core/Packets/G2C/SCAccountAttribute2Packet.cs
 
-diff --git a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
-index db416388eb..0eaa9ed643 100644
---- a/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
-+++ b/AAEmu.Game/Core/Managers/TimedRewardsManager.cs
-@@ -97,7 +97,7 @@ public void DoDailyAccountLogin(ulong accountId)
+diff --git a/AAEmu.Game/Core/Packets/C2G/CSNotifyInGameCompletedPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSNotifyInGameCompletedPacket.cs
+index c5a152cb96..6f913009f0 100644
+--- a/AAEmu.Game/Core/Packets/C2G/CSNotifyInGameCompletedPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSNotifyInGameCompletedPacket.cs
+@@ -1,6 +1,9 @@
+ ﻿using AAEmu.Commons.Network;
+ using AAEmu.Game.Core.Managers.World;
+ using AAEmu.Game.Core.Network.Game;
++using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models;
++using AAEmu.Game.Models.Game.Chat;
  
-         if (AppConfiguration.Instance.Loyalty.DailyLogin > 0)
-             AccountManager.Instance.AddLoyalty(accountId, AppConfiguration.Instance.Loyalty.DailyLogin);
--        
-+
-         AccountManager.Instance.UpdateDivineClock(accountId, 0, 0);
-     }
+ namespace AAEmu.Game.Core.Packets.C2G;
  
-diff --git a/AAEmu.Game/Core/Managers/World/WorldManager.cs b/AAEmu.Game/Core/Managers/World/WorldManager.cs
-index 2c51b4c65e..a5a2aeb670 100644
---- a/AAEmu.Game/Core/Managers/World/WorldManager.cs
-+++ b/AAEmu.Game/Core/Managers/World/WorldManager.cs
-@@ -1240,25 +1240,32 @@ public void OnPlayerJoin(Character character)
-     private void StartingFirstJourney(Character character)
+@@ -12,6 +15,8 @@ public CSNotifyInGameCompletedPacket() : base(CSOffsets.CSNotifyInGameCompletedP
+ 
+     public override void Read(PacketStream stream)
      {
-         var questId = 0u;
-+        var sphereId = 0u;
-         switch (character.Race)
-         {
-             case Race.Nuian: // Nuian
-                 questId = 6839;
-+                sphereId = 2321;
-                 break;
-             case Race.Dwarf: // Dwarf
-                 questId = 5811;
-+                sphereId = 2613;
-                 break;
-             case Race.Elf: // Elf
-                 questId = 6840;
-+                sphereId = 2322;
-                 break;
-             case Race.Hariharan: // Hariharan
-                 questId = 6842;
-+                sphereId = 2324;
-                 break;
-             case Race.Ferre: // Ferre
-                 questId = 6841;
-+                sphereId = 2323;
-                 break;
-             case Race.Warborn: // Warborn
-                 questId = 8228;
-+                sphereId = 2600;
-                 break;
-             case Race.Fairy:
-                 break;
-@@ -1268,7 +1275,7 @@ private void StartingFirstJourney(Character character)
-         // showing it once
-         if (character.Updated - character.Created < TimeSpan.FromMinutes(1))
-         {
--            character.Quests.AddQuest(questId);
-+            character.Quests.AddQuestFromSphere(questId, sphereId);
-         }
-     }
++        Connection.SendPacket(new SCScheduledEventStartedPacket());
++        Connection.SendPacket(new SCChatMessagePacket(ChatType.System, AppConfiguration.Instance.World.MOTD)); // "Welcome to AAEmu!"
  
+         WorldManager.Instance.OnPlayerJoin(Connection.ActiveChar);
+         Logger.Info("NotifyInGameCompleted SubZoneId {0}", Connection.ActiveChar.SubZoneId);
 diff --git a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
-index 09749330e4..afc5d24638 100644
+index afc5d24638..2cd30a040f 100644
 --- a/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
 +++ b/AAEmu.Game/Core/Packets/C2G/CSSelectCharacterPacket.cs
-@@ -9,6 +9,7 @@
+@@ -8,6 +8,7 @@
+ using AAEmu.Game.Core.Managers.World;
  using AAEmu.Game.Core.Network.Game;
  using AAEmu.Game.Core.Packets.G2C;
++using AAEmu.Game.Models.Game;
  using AAEmu.Game.Models.Game.Char;
-+using AAEmu.Game.Models.Game.Items.Actions;
+ using AAEmu.Game.Models.Game.Items.Actions;
  using AAEmu.Game.Models.Game.Skills;
- using AAEmu.Game.Models.Game.Units;
- using AAEmu.Game.Models.Game.Units.Route;
-@@ -64,18 +65,8 @@ public override void Read(PacketStream stream)
-             Connection.ActiveChar.Simulation = new Simulation(character);
+@@ -116,9 +117,6 @@ public override void Read(PacketStream stream)
  
-             // TODO: Fix the patron and auction house license buff issue
--            if (Connection.ActiveChar is { } unit)
--            {
--                if (!unit.Buffs.CheckBuff((uint)SkillConstants.Patron)) //TODO Wrong place
--                {
--                    unit.Buffs.AddBuff(new Buff(unit, unit, SkillCaster.GetByType(SkillCasterType.Unit), SkillManager.Instance.GetBuffTemplate(8000011), null, System.DateTime.Now));
--                }
--
--                if (!unit.Buffs.CheckBuff((uint)SkillConstants.AuctionLicense)) //TODO Wrong place
--                {
--                    unit.Buffs.AddBuff(new Buff(unit, unit, SkillCaster.GetByType(SkillCasterType.Unit), SkillManager.Instance.GetBuffTemplate(8000012), null, System.DateTime.Now));
--                }
--            }
-+            Connection.ActiveChar.Buffs.AddBuff((uint)SkillConstants.Patron, Connection.ActiveChar);
-+            Connection.ActiveChar.Buffs.AddBuff((uint)SkillConstants.AuctionLicense, Connection.ActiveChar);
- 
-             Connection.SendPacket(new SCResidentInfoListPacket(ResidentManager.Instance.GetInfo()));
-             Connection.SendPacket(new SCCharacterStatePacket(character));
-@@ -126,6 +117,7 @@ public override void Read(PacketStream stream)
              character.Breath = character.LungCapacity;
  
-             Connection.SendPacket(new SCScheduledEventStartedPacket());
-+            Connection.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Unk136, [], []));
- 
+-            Connection.SendPacket(new SCScheduledEventStartedPacket());
+-            Connection.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Unk136, [], []));
+-
              Connection.ActiveChar.OnZoneChange(0, Connection.ActiveChar.Transform.ZoneId);
          }
-diff --git a/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs b/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
-index ff0a5f14eb..135df82c33 100644
---- a/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
-+++ b/AAEmu.Game/Core/Packets/Proxy/FinishStatePacket.cs
-@@ -38,9 +38,9 @@ public override void Read(PacketStream stream)
-                 // Test URLs                                          // Original Trion values
-                 // Client treats these as folders and will add a trailing slash (/) with whatever it needs
-                 // For example, opening the Wiki would send http://localhost/aaemu/platform/login
--                var authUrl = "http://localhost/aaemu/login";         // "https://session.draft.integration.triongames.priv";
--                var platformUrl = "http://localhost/aaemu/platform";  // "http://archeage.draft.integration.triongames.priv/commerce/pruchase/credits/purchase-credits-flow.action";
--                var commerceUrl = "http://localhost/aaemu/shop";      // "" ;
-+                //var authUrl = "http://localhost/aaemu/login";         // "https://session.draft.integration.triongames.priv";
-+                //var platformUrl = "http://localhost/aaemu/platform";  // "http://archeage.draft.integration.triongames.priv/commerce/pruchase/credits/purchase-credits-flow.action";
-+                //var commerceUrl = "http://localhost/aaemu/shop";      // "" ;
- 
-                 // It seems this packet can be ignored if you don't use the wiki/shop
-                 //Connection.SendPacket(new SCTrionConfigPacket(
-@@ -56,7 +56,7 @@ public override void Read(PacketStream stream)
-                         Connection.Payment.EndTime)
-                 );
-                 Connection.SendPacket(new SCChatSpamConfigPacket());
--                Connection.SendPacket(new SCAccountAttributeConfigPacket([false, false, false]));
-+                Connection.SendPacket(new SCAccountAttributeConfigPacket([false, true, false]));
-                 Connection.SendPacket(new SCLevelRestrictionConfigPacket(0, 10, 0, 10, 10, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])); // TODO - config files
- 
-                 Connection.SendPacket(new SCTaxItemConfigPacket(0));
-diff --git a/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs b/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
-index 141a16e831..3405611af2 100644
---- a/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
-+++ b/AAEmu.Game/Models/Game/Items/Actions/ItemTaskType.cs
-@@ -119,5 +119,6 @@ public enum ItemTaskType : byte
-     Sknize = 113,
-     ItemTaskThistimeUnpack = 114,
-     BuyPremiumService = 115,
--    BuyAaPoint = 116
-+    BuyAaPoint = 116,
-+    Unk136 = 136
- }
-diff --git a/AAEmu.Game/Models/Game/ScheduleItem.cs b/AAEmu.Game/Models/Game/ScheduleItem.cs
-index 39a5a81f89..b4d68f3197 100644
---- a/AAEmu.Game/Models/Game/ScheduleItem.cs
-+++ b/AAEmu.Game/Models/Game/ScheduleItem.cs
-@@ -7,7 +7,7 @@ public class ScheduleItem : PacketMarshaler
- {
-     public uint ItemTemplateId { get; set; }
-     public byte Gave { get; set; }
--    public int Acumulated { get; set; }
-+    public uint Acumulated { get; set; }
-     public DateTime Updated { get; set; }
- 
-     public override PacketStream Write(PacketStream stream)
+         else
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCAccountAttribute2Packet.cs b/AAEmu.Game/Core/Packets/G2C/SCAccountAttribute2Packet.cs
+new file mode 100644
+index 0000000000..5ad25e3be7
+--- /dev/null
++++ b/AAEmu.Game/Core/Packets/G2C/SCAccountAttribute2Packet.cs
+@@ -0,0 +1,37 @@
++﻿using System;
++
++using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Network.Game;
++
++namespace AAEmu.Game.Core.Packets.G2C;
++
++public class SCAccountAttribute2Packet : GamePacket
++{
++    private readonly byte _AccountAttributeKind;
++    private readonly uint _extraKind;
++    private readonly byte _worldId;
++    private readonly uint _count;
++    private readonly DateTime _startDate;
++    private readonly DateTime _endData;
++
++    public SCAccountAttribute2Packet() : base(SCOffsets.SCAccountAttribute2Packet, 5)
++    {
++        _AccountAttributeKind = 1;
++        _extraKind = 0;
++        _worldId = 0x1;
++        _count = 0;
++        _startDate = DateTime.Now;
++        _endData = DateTime.MinValue;
++    }
++
++    public override PacketStream Write(PacketStream stream)
++    {
++        stream.Write(_AccountAttributeKind);
++        stream.Write(_extraKind);
++        stream.Write(_worldId);
++        stream.Write(_count);
++        stream.Write(_startDate);
++        stream.Write(_endData);
++        return stream;
++    }
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCOffsets.cs b/AAEmu.Game/Core/Packets/G2C/SCOffsets.cs
+index 31b587be63..3359a1e6e9 100644
+--- a/AAEmu.Game/Core/Packets/G2C/SCOffsets.cs
++++ b/AAEmu.Game/Core/Packets/G2C/SCOffsets.cs
+@@ -669,7 +669,7 @@ public static class SCOffsets
+     public const ushort SCUnitAiAggroPacket = 0x027;
+     public const ushort SCCharacterGenderAndModelModifiedPacket = 0x172;
+     public const ushort SCAccountAttributePacket = 0x28C; // off_39C19E24
+-    public const ushort off_39C19E30 = 0x112;
++    public const ushort SCAccountAttribute2Packet = 0x112; // off_39C19E30
+     public const ushort off_39C19E48 = 0x008;
+     public const ushort off_39C19E54 = 0x108;
+     public const ushort SCItemLinkTextForLootPackItemBroadcastPacket = 0x2BB;
 diff --git a/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
-index b59e5e7850..e7fbe58667 100644
+index e7fbe58667..9fd6b36a96 100644
 --- a/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
 +++ b/AAEmu.Game/Models/Tasks/Characters/CharacterOnlineTrackingTask.cs
-@@ -1,6 +1,8 @@
- ﻿using System;
- using AAEmu.Game.Core.Managers;
+@@ -3,6 +3,7 @@
  using AAEmu.Game.Core.Managers.World;
-+using AAEmu.Game.Core.Packets.G2C;
-+using AAEmu.Game.Models.Game;
+ using AAEmu.Game.Core.Packets.G2C;
+ using AAEmu.Game.Models.Game;
++using AAEmu.Game.Models.Game.Items.Actions;
  
  namespace AAEmu.Game.Models.Tasks.Characters;
  
-@@ -45,6 +47,18 @@ public override void Execute()
- 
-             // TODO: Use lastSeconds and newSeconds as a comparison for triggering time played achievements
-             // TODO: Add divine clock feedback packets
+@@ -58,6 +59,8 @@ public override void Execute()
+                     Updated = DateTime.UtcNow
+                 };
+                 character.SendPacket(new SCScheduleItemUpdatePacket([si]));
++                character.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Unk136, [], []));
 +
-+            if (time % 60 == 0)
-+            {
-+                var si = new ScheduleItem
-+                {
-+                    ItemTemplateId = 9000003,
-+                    Gave = (byte)taken,
-+                    Acumulated = time,
-+                    Updated = DateTime.UtcNow
-+                };
-+                character.SendPacket(new SCScheduleItemUpdatePacket([si]));
-+            }
+             }
          }
  
-         lock (_lock)
