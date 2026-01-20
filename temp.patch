@@ -1,256 +1,684 @@
-From 30db08e8d2f37b8a58c66d8e09b47a941188a9d9 Mon Sep 17 00:00:00 2001
-From: HCN <hermanocabral@hermanocabral.com>
-Date: Mon, 29 Jul 2024 21:56:08 +0700
-Subject: [PATCH] [All] Remove unused code from AAEmu.Commons (#1055)
+From faabb7da0c20615227422e2326a4514d848c5655 Mon Sep 17 00:00:00 2001
+From: ZeromusXYZ <zeromus.xyz@gmail.com>
+Date: Tue, 30 Jul 2024 19:08:48 +0200
+Subject: [PATCH] [Game] Movement packet and AI enhancements (#1056)
 
+* [Game] Change to sending buff data
+
+- Changed the ``GetAllBuffs`` function so it includes passive buffs, but only for the hidden buffs. This fixes some targeting issues with Taming nets (and probably some other things)
+- The GM command ``/addbuff view`` now also lists if a buff is passive, and gives a summary of all active buff tags. IT will include ALL passive buffs, even those not explicitly sent by the server.
+
+* [Game] Path movement enhancements
+
+- Some changes to how path moment works.
+- Renamed ``StanceFlags`` to ``ActorFlags`` in path actions (also ``AiPathActorFalgs``)
+- Added movement path to ``Farkrag the Wanderer`` in ``Falcorth``
+- Changed ``NpcAi.GetRealMovementSpeed`` so that you need to provide it's base speed for calculations
+- Ai will no longer target itself when following a path of unit
+- Changed ``MoveType.Flags`` to by a enum instead of a byte
+
+* [Game] Changed AI so that it can run without players
+
+- Changed AI so it can run without players in the region. Only works for NPCs with a active path or CommandSet running. This solves future issues with world bosses.
 ---
- AAEmu.Commons/IO/Serialization.cs             | 109 ------------------
- AAEmu.Commons/Network/BufferManager.cs        |  56 ---------
- AAEmu.Commons/Network/NetBase.cs              |  13 ---
- .../Network/SocketAsyncEventArgsPool.cs       |  38 ------
- 4 files changed, 216 deletions(-)
- delete mode 100644 AAEmu.Commons/IO/Serialization.cs
- delete mode 100644 AAEmu.Commons/Network/BufferManager.cs
- delete mode 100644 AAEmu.Commons/Network/NetBase.cs
- delete mode 100644 AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
+ .../Core/Managers/UnitManagers/NpcManager.cs  |  3 ++
+ AAEmu.Game/Data/Path/falcorth_farkrag.path    |  4 ++
+ .../Data/Path/windscour_bull_elephant_1.path  |  2 +-
+ AAEmu.Game/GameData/TagsGameData.cs           | 22 ++++++++++-
+ .../Behaviors/Archer/ArcherAttackBehavior.cs  |  2 +-
+ .../AI/v2/Behaviors/BaseCombatBehavior.cs     |  2 +-
+ .../v2/Behaviors/Common/FollowPathBehavior.cs |  2 +-
+ .../v2/Behaviors/Common/FollowUnitBehavior.cs |  6 +--
+ .../Behaviors/Common/ReturnStateBehavior.cs   |  2 +-
+ .../AI/v2/Behaviors/Common/RoamingBehavior.cs |  2 +-
+ .../Game/AI/v2/Controls/AiPathHandler.cs      | 15 ++++----
+ .../Game/AI/v2/Controls/AiPathPointAction.cs  |  2 +-
+ .../Models/Game/AI/v2/Framework/NpcAi.cs      | 17 ++++++---
+ AAEmu.Game/Models/Game/NPChar/Npc.cs          | 10 ++---
+ .../SkillControllers/LeapSkillController.cs   |  7 ++--
+ AAEmu.Game/Models/Game/Units/Buffs.cs         |  8 +++-
+ AAEmu.Game/Models/Game/Units/IBuffs.cs        |  2 +-
+ .../Models/Game/Units/Movements/MoveType.cs   | 13 ++++---
+ .../Models/StaticValues/MoveTypeFlags.cs      | 27 ++++++++++++--
+ AAEmu.Game/Scripts/Commands/AddBuff.cs        | 37 ++++++++++++++++---
+ AAEmu.Game/Scripts/Commands/Nrot.cs           |  3 +-
+ AAEmu.Game/Scripts/Commands/UseSkill.cs       |  4 +-
+ .../SubCommands/Npcs/NpcPositionSubCommand.cs |  5 ++-
+ 23 files changed, 141 insertions(+), 56 deletions(-)
+ create mode 100644 AAEmu.Game/Data/Path/falcorth_farkrag.path
 
-diff --git a/AAEmu.Commons/IO/Serialization.cs b/AAEmu.Commons/IO/Serialization.cs
-deleted file mode 100644
-index f41aaa168b..0000000000
---- a/AAEmu.Commons/IO/Serialization.cs
-+++ /dev/null
-@@ -1,109 +0,0 @@
--using System;
--using System.IO;
--using System.Text;
--using System.Xml.Serialization;
--
--
--namespace AAEmu.Commons.IO;
--
--/// <summary>
--/// Helps with serializing an object to XML and back again.
--/// </summary>
--public static class Serialization
--{
--    /// <summary>
--    /// Converts an object to XML
--    /// </summary>
--    /// <param name="temp">Object to convert</param>
--    /// <param name="fileName">File to save the XML to</param>
--    /// <returns>string representation of the object in XML format</returns>
--    public static string ObjectToXML(object temp, string rootName, string fileName)
+diff --git a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
+index d98fa77ec4..24b2d79a2b 100644
+--- a/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
++++ b/AAEmu.Game/Core/Managers/UnitManagers/NpcManager.cs
+@@ -134,6 +134,7 @@ public Npc Create(uint objectId, uint id)
+                 SetEquipItemTemplate(npc, template.BodyItems[i].ItemId, slot, 0, template.BodyItems[i].NpcOnly);
+         }
+ 
++        // Initial Buffs
+         foreach (var buffId in template.Buffs)
+         {
+             var buff = SkillManager.Instance.GetBuffTemplate(buffId);
+@@ -147,12 +148,14 @@ public Npc Create(uint objectId, uint id)
+             buff.Apply(npc, obj, npc, null, null, new EffectSource(), null, DateTime.UtcNow);
+         }
+ 
++        // Passive Buffs
+         foreach (var npcPassiveBuff in template.PassiveBuffs)
+         {
+             var passive = new PassiveBuff() { Template = npcPassiveBuff.PassiveBuff };
+             passive.Apply(npc);
+         }
+ 
++        // Stat bonus effects
+         foreach (var bonusTemplate in template.Bonuses)
+         {
+             var bonus = new Bonus();
+diff --git a/AAEmu.Game/Data/Path/falcorth_farkrag.path b/AAEmu.Game/Data/Path/falcorth_farkrag.path
+new file mode 100644
+index 0000000000..91bf642bfb
+--- /dev/null
++++ b/AAEmu.Game/Data/Path/falcorth_farkrag.path
+@@ -0,0 +1,4 @@
++Speed|23717|9455|577.7|0.75
++ActorFlags|23710|9549|573.2|5
++EnableLoop|23718|9602|572.9|
++|23710|9549|573.2|
+diff --git a/AAEmu.Game/Data/Path/windscour_bull_elephant_1.path b/AAEmu.Game/Data/Path/windscour_bull_elephant_1.path
+index 9b76ba74d8..b5bbef0974 100644
+--- a/AAEmu.Game/Data/Path/windscour_bull_elephant_1.path
++++ b/AAEmu.Game/Data/Path/windscour_bull_elephant_1.path
+@@ -1,5 +1,5 @@
+ Speed|25847.36|6373.877|389.0337|1.5
+-StanceFlags|25852.297|6374.1484|388.8366|4
++ActorFlags|25852.297|6374.1484|388.8366|4
+ EnableLoop|25858.062|6375.9844|388.3804|
+ |25862.467|6379.83|387.5591|
+ |25867.377|6382.8496|387.1749|
+diff --git a/AAEmu.Game/GameData/TagsGameData.cs b/AAEmu.Game/GameData/TagsGameData.cs
+index 1d951f4046..533244f334 100644
+--- a/AAEmu.Game/GameData/TagsGameData.cs
++++ b/AAEmu.Game/GameData/TagsGameData.cs
+@@ -128,7 +128,25 @@ public void Load(SqliteConnection connection, SqliteConnection connection2)
+         #endregion
+     }
+ 
+-    public void PostLoad()
 -    {
--        var xml = ObjectToXML(temp, rootName);
--        File.AppendAllText(fileName, xml);
--        return xml;
--    }
++        public void PostLoad()
++        {
++        }
++
++        public IReadOnlySet<uint> GetTagsByTargetId(TagType tagType, uint ownerId)
++        {
++            var res = new HashSet<uint>();
++            if (_tags.TryGetValue(tagType, out var tagDictionary))
++            {
++                foreach (var (tagKey, tagOwners) in tagDictionary)
++                {
++                    if (tagOwners.Contains(ownerId))
++                    {
++                        res.Add(tagKey);
++                    }
++                }
++            }
++
++            return res;
++        }
+     }
+ }
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Archer/ArcherAttackBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Archer/ArcherAttackBehavior.cs
+index 97f035e370..793475cf8e 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Archer/ArcherAttackBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Archer/ArcherAttackBehavior.cs
+@@ -70,7 +70,7 @@ public override void Tick(TimeSpan delta)
+             var npcPosition = Ai.Owner.Transform.World.Position;
+             var abuserPosition = Ai.Owner.CurrentTarget.Transform.World.Position;
+ 
+-            var moveSpeed = Ai.GetRealMovementSpeed();
++            var moveSpeed = Ai.GetRealMovementSpeed(Ai.Owner.BaseMoveSpeed);
+             var moveFlags = Ai.GetRealMovementFlags(moveSpeed);
+             moveSpeed *= (delta.Milliseconds / 1000.0);
+             Ai.Owner.MoveTowards(idlePosition, (float)moveSpeed, moveFlags);
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
+index 2288266a0e..7f96403f44 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/BaseCombatBehavior.cs
+@@ -65,7 +65,7 @@ public void MoveInRange(BaseUnit target, TimeSpan delta)
+         {
+             range -= 1f; // Fix that ID=7927, Plateau Earth Elemental can hit with a melee attack
+         }
+-        var speed = Ai.GetRealMovementSpeed();
++        var speed = Ai.GetRealMovementSpeed(Ai.Owner.BaseMoveSpeed);
+         var moveFlags = Ai.GetRealMovementFlags(speed);
+         speed *= (delta.Milliseconds / 1000.0);
+         var distanceToTarget = Ai.Owner.GetDistanceTo(target, true);
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
+index d59ad7b08d..03fe0d7228 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowPathBehavior.cs
+@@ -51,7 +51,7 @@ public override void Tick(TimeSpan delta)
+         //_aiParams = aiParams;
+ 
+         if (!UpdateTarget())
+-            Ai.Owner.SetTarget(Ai.Owner);
++            Ai.Owner.SetTarget(null);
+ 
+         if (CheckAggression())
+             return;
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
+index 6f737fd719..f7d2b45e97 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/FollowUnitBehavior.cs
+@@ -22,7 +22,7 @@ public override void Tick(TimeSpan delta)
+             return;
+ 
+         if (!UpdateTarget())
+-            Ai.Owner.SetTarget(Ai.Owner);
++            Ai.Owner.SetTarget(null);
+ 
+         if (CheckAggression())
+             return;
+@@ -40,8 +40,8 @@ public override void Tick(TimeSpan delta)
+         var targetDistance = Ai.Owner.GetDistanceTo(Ai.AiFollowUnitObj, true);
+ 
+         var followSpeedMultiplier = (float)Math.Min(5.0, targetDistance / 1.5);
 -
--    /// <summary>
--    /// Converts an object to XML
--    /// </summary>
--    /// <param name="temp">Object to convert</param>
--    /// <returns>string representation of the object in XML format</returns>
--    public static string ObjectToXML(object temp, string rootName)
--    {
--        if (temp == null)
--            throw new ArgumentException("Object can not be null");
--        using (var stream = new MemoryStream())
--        {
--            var serializer = new XmlSerializer(temp.GetType(), new XmlRootAttribute(rootName));
--            serializer.Serialize(stream, temp);
--            stream.Flush();
--            return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Position);
--        }
--    }
--
--    /// <summary>
--    /// Takes an XML file and exports the Object it holds
--    /// </summary>
--    /// <param name="fileName">File name to use</param>
--    /// <param name="result">Object to export to</param>
--    public static void XMLToObject<T>(string fileName, out T result, string rootName)
--    {
--        if (string.IsNullOrEmpty(fileName))
--            throw new ArgumentException("File name can not be null/empty");
--        if (!File.Exists(fileName))
--            throw new ArgumentException("File does not exist");
--        var content = FileManager.GetFileContents(fileName);
--        result = XMLToObject<T>(content, rootName);
--    }
--
--    /// <summary>
--    /// Converts an XML string to an object
--    /// </summary>
--    /// <typeparam name="T">Object type</typeparam>
--    /// <param name="xml">XML string</param>
--    /// <returns>The object of the specified type</returns>
--    public static T XMLToObject<T>(string xml, string rootName)
--    {
--        if (string.IsNullOrEmpty(xml))
--            throw new ArgumentException("XML can not be null/empty");
--        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
--        {
--            var serializer = new XmlSerializer(typeof(T), new XmlRootAttribute(rootName));
--            return (T)serializer.Deserialize(stream);
--        }
--    }
--
--    /// <summary>
--    /// Takes an XML file and exports the Object it holds
--    /// </summary>
--    /// <param name="fileName">File name to use</param>
--    /// <param name="result">Object to export to</param>
--    /// <param name="type">Object type to export</param>
--    public static void XMLToObject(string fileName, out object result, Type type, string rootName)
--    {
--        if (string.IsNullOrEmpty(fileName))
--            throw new ArgumentException("File name can not be null/empty");
--        if (!File.Exists(fileName))
--            throw new ArgumentException("File does not exist");
--        var content = FileManager.GetFileContents(fileName);
--        result = XMLToObject(content, type, rootName);
--    }
--
--    /// <summary>
--    /// Converts an XML string to an object
--    /// </summary>
--    /// <param name="xml">XML string</param>
--    /// <param name="type">Object type to export</param>
--    /// <returns>The object of the specified type</returns>
--    public static object XMLToObject(string xml, Type type, string rootName)
--    {
--        if (string.IsNullOrEmpty(xml))
--            throw new ArgumentException("XML can not be null/empty");
--        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
--        {
--            var serializer = new XmlSerializer(type, new XmlRootAttribute(rootName));
--            return serializer.Deserialize(stream);
--        }
--    }
--}
-diff --git a/AAEmu.Commons/Network/BufferManager.cs b/AAEmu.Commons/Network/BufferManager.cs
-deleted file mode 100644
-index 836a2fa1ab..0000000000
---- a/AAEmu.Commons/Network/BufferManager.cs
-+++ /dev/null
-@@ -1,56 +0,0 @@
--﻿using System.Collections.Concurrent;
--using System.Net.Sockets;
--using NLog;
--
--namespace AAEmu.Commons.Network;
--
--public class BufferManager
--{
--    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
--
--    private int _numBytes;
--    private byte[] _buffer;
--    private ConcurrentStack<int> _freeIndexPool;
--    private int _currentIndex;
--    private int _bufferSize;
--
--    public BufferManager(int totalBytes, int bufferSize)
--    {
--        _numBytes = totalBytes;
--        _currentIndex = 0;
--        _bufferSize = bufferSize;
--        _freeIndexPool = new ConcurrentStack<int>();
--    }
--
--    public void InitBuffer()
--    {
--        _buffer = new byte[_numBytes];
--    }
--
--    public bool SetBuffer(SocketAsyncEventArgs args)
--    {
--        lock (_freeIndexPool)
--        {
--            if (!_freeIndexPool.IsEmpty)
--            {
--                if (!_freeIndexPool.TryPop(out var offset))
--                    Logger.Warn("TryPop from _freeIndexPool ConcurrentStack failed.");
--                args.SetBuffer(_buffer, offset, _bufferSize);
--            }
--            else
--            {
--                if ((_numBytes - _bufferSize) < _currentIndex)
--                    return false;
--                args.SetBuffer(_buffer, _currentIndex, _bufferSize);
--                _currentIndex += _bufferSize;
--            }
--        }
--        return true;
--    }
--
--    public void FreeBuffer(SocketAsyncEventArgs args)
--    {
--        _freeIndexPool.Push(args.Offset);
--        //args.SetBuffer(null, 0, 0);
--    }
--}
-diff --git a/AAEmu.Commons/Network/NetBase.cs b/AAEmu.Commons/Network/NetBase.cs
-deleted file mode 100644
-index f20fc9f84c..0000000000
---- a/AAEmu.Commons/Network/NetBase.cs
-+++ /dev/null
-@@ -1,13 +0,0 @@
--﻿using AAEmu.Commons.Network.Core;
--
--namespace AAEmu.Commons.Network;
--
--public interface INetBase
--{
--    void OnConnect(Session session);
--    void OnReceive(Session session, byte[] buf, int bytes);
--    void OnSend(Session session, byte[] buf, int offset, int bytes);
--    void OnDisconnect(Session session);
--    void RemoveSession(Session session);
--}
--
-diff --git a/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs b/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
-deleted file mode 100644
-index 6cc75c3330..0000000000
---- a/AAEmu.Commons/Network/SocketAsyncEventArgsPool.cs
-+++ /dev/null
-@@ -1,38 +0,0 @@
--﻿using System;
--using System.Collections.Concurrent;
--using System.Net.Sockets;
--using NLog;
--
--namespace AAEmu.Commons.Network;
--
--public class SocketAsyncEventArgsPool
--{
--    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
--    private ConcurrentStack<SocketAsyncEventArgs> _pool;
--
--    public int Count => _pool.Count;
--    public bool IsEmpty => _pool.IsEmpty;
--
--    public SocketAsyncEventArgsPool()
--    {
--        _pool = new ConcurrentStack<SocketAsyncEventArgs>();
--    }
--
--    public void Push(SocketAsyncEventArgs item)
--    {
--        if (item == null)
--        {
--            Logger.Error("Items added to a SocketAsyncEventArgsPool cannot be null.");
--            throw
--                new ArgumentNullException(nameof(item));
--        }
--        _pool.Push(item);
--    }
--
--    public SocketAsyncEventArgs Pop()
--    {
--        if (!_pool.TryPop(out var output))
--            Logger.Error("TryPop from SocketAsyncEventArgs ConcurrentStack failed.");
--        return output;
--    }
--}
+-        var moveSpeed = Ai.GetRealMovementSpeed() * followSpeedMultiplier;
++        
++        var moveSpeed = Ai.GetRealMovementSpeed(Ai.Owner.BaseMoveSpeed) * followSpeedMultiplier;
+         var moveFlags = Ai.GetRealMovementFlags(moveSpeed);
+         moveSpeed *= (delta.Milliseconds / 1000.0);
+         Ai.Owner.MoveTowards(Ai.AiFollowUnitObj.Transform.World.Position, (float)moveSpeed, moveFlags);
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
+index 3218c515e3..2d9130b617 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/ReturnStateBehavior.cs
+@@ -68,7 +68,7 @@ public override void Tick(TimeSpan delta)
+         if (!_enter)
+             return; // not initialized yet Enter()
+ 
+-        var moveSpeed = Ai.GetRealMovementSpeed();
++        var moveSpeed = Ai.GetRealMovementSpeed(Ai.Owner.BaseMoveSpeed);
+         var moveFlags = Ai.GetRealMovementFlags(moveSpeed);
+         moveSpeed *= (delta.Milliseconds / 1000.0);
+         Ai.Owner.MoveTowards(Ai.IdlePosition, (float)moveSpeed, moveFlags);
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
+index 32500460a7..503dcd7966 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Behaviors/Common/RoamingBehavior.cs
+@@ -43,7 +43,7 @@ public override void Tick(TimeSpan delta)
+         if (_targetRoamPosition.Equals(Vector3.Zero))
+             return;
+ 
+-        var moveSpeed = Ai.GetRealMovementSpeed();
++        var moveSpeed = Ai.GetRealMovementSpeed(Ai.Owner.BaseMoveSpeed);
+         var moveFlags = Ai.GetRealMovementFlags(moveSpeed);
+         moveSpeed *= (delta.Milliseconds / 1000.0);
+         Ai.Owner.MoveTowards(_targetRoamPosition, (float)moveSpeed, moveFlags);
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
+index a50788ed55..d90509fcd5 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathHandler.cs
+@@ -31,7 +31,7 @@ public class AiPathHandler(NpcAi aiOwner)
+     /// <summary>
+     /// Stance to use when moving on the Path; 5-walk, 4-run, 3-stand still
+     /// </summary>
+-    public byte AiPathStanceFlags { get; set; } = 4;
++    public byte AiPathActorFlags { get; set; } = 4;
+ 
+     /// <summary>
+     /// Currently targeted position for path movement
+@@ -79,9 +79,9 @@ public bool RunCurrentPath(TimeSpan delta)
+                     if (float.TryParse(nextPos.Param, CultureInfo.InvariantCulture, out var newSpeed))
+                         AiPathSpeed = newSpeed;
+                     break;
+-                case AiPathPointAction.StanceFlags:
++                case AiPathPointAction.ActorFlags:
+                     if (byte.TryParse(nextPos.Param, out var newStance))
+-                        AiPathStanceFlags = newStance;
++                        AiPathActorFlags = newStance;
+                     break;
+                 case AiPathPointAction.ReturnToCommandSet:
+                     Owner.GoToRunCommandSet();
+@@ -94,19 +94,20 @@ public bool RunCurrentPath(TimeSpan delta)
+             if (!nextPos.Position.Equals(Vector3.Zero))
+             {
+                 TargetPosition = nextPos.Position;
+-                // Move the idle "home" location long with the path, so it doesn't immediately trigger a return to home state when going into combat
+-                Owner.IdlePosition = nextPos.Position;
+             }
+         }
+ 
+         // We know where to go? Then go that direction
+         if (TargetPosition != Vector3.Zero)
+         {
+-            var moveSpeed = Owner.GetRealMovementSpeed();
++            var moveSpeed = Owner.GetRealMovementSpeed(AiPathSpeed);
+             // var moveFlags = Owner.GetRealMovementFlags(moveSpeed);
+             moveSpeed *= (delta.Milliseconds / 1000.0);
+-            Owner.Owner.MoveTowards(TargetPosition, (float)moveSpeed, AiPathStanceFlags);
++            Owner.Owner.MoveTowards(TargetPosition, (float)moveSpeed, AiPathActorFlags);
+             // Owner.Owner.MoveTowards(TargetPosition, AiPathSpeed * Owner.Owner.BaseMoveSpeed * (delta.Milliseconds / 1000.0f), AiPathStanceFlags);
++
++            // Move the idle "home" location along with the path, so it doesn't immediately trigger a return to home state when going into combat
++            Owner.IdlePosition = Owner.Owner.Transform.World.Position;
+         }
+ 
+         return HasUnhandledPathMovementData();
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathPointAction.cs b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathPointAction.cs
+index 8bbaf40cf0..b35dac0c92 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathPointAction.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Controls/AiPathPointAction.cs
+@@ -21,7 +21,7 @@ public enum AiPathPointAction
+     /// <summary>
+     /// Stance to be used when following the path
+     /// </summary>
+-    StanceFlags,
++    ActorFlags,
+     /// <summary>
+     /// Inserted by RunCommandSet to part that it needs to return there, do not manually put this in .path files
+     /// </summary>
+diff --git a/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs b/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
+index 63431648a4..fdcfef66d8 100644
+--- a/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
++++ b/AAEmu.Game/Models/Game/AI/v2/Framework/NpcAi.cs
+@@ -147,7 +147,7 @@ public void Tick(TimeSpan delta)
+     {
+         /*if ((!Owner?.Region?.IsEmpty() ?? false)
+             || (Owner?.Region?.AreNeighborsEmpty() ?? false))*/
+-        if (Owner?.Region?.HasPlayerActivity() ?? false)
++        if (HasPersistentAi() || (Owner?.Region?.HasPlayerActivity() ?? false))
+         {
+             _currentBehavior?.Tick(delta);
+ 
+@@ -179,6 +179,14 @@ public void Tick(TimeSpan delta)
+         }
+     }
+ 
++    private bool HasPersistentAi()
++    {
++        return PathHandler.AiPathPoints.Count > 0 || 
++               PathHandler.AiPathPointsRemaining.Count > 0 || 
++               AiFollowUnitObj != null ||
++               AiCommandsQueue.Count > 0; 
++    }
++
+     private void Transition(TransitionEvent on)
+     {
+         if (!_transitions.TryGetValue(_currentBehavior, out var transitionList))
+@@ -363,14 +371,13 @@ public bool DoFollowNearestNpc(uint followNpc, float maxRange)
+         return false;
+     }
+ 
+-    public double GetRealMovementSpeed()
++    public double GetRealMovementSpeed(double baseMoveSpeed)
+     {
+-        var moveSpeed = (double)Owner.BaseMoveSpeed;
+         var speedMul = (Owner.CalculateWithBonuses(0, UnitAttribute.MoveSpeedMul) / 1000.0) + 1.0;
+         if (Math.Abs(speedMul - 1.0) > double.Epsilon)
+-            moveSpeed *= speedMul;
++            baseMoveSpeed *= speedMul;
+ 
+-        return moveSpeed;
++        return baseMoveSpeed;
+     }
+ 
+     public byte GetRealMovementFlags(double moveSpeed)
+diff --git a/AAEmu.Game/Models/Game/NPChar/Npc.cs b/AAEmu.Game/Models/Game/NPChar/Npc.cs
+index d13d7c6faa..e05cd1cead 100644
+--- a/AAEmu.Game/Models/Game/NPChar/Npc.cs
++++ b/AAEmu.Game/Models/Game/NPChar/Npc.cs
+@@ -1173,7 +1173,7 @@ public void OnDamageReceived(Unit attacker, int amount)
+         */
+     }
+ 
+-    public void MoveTowards(Vector3 other, float distance, byte flags = 4)
++    public void MoveTowards(Vector3 other, float distance, byte actorFlags = 4)
+     {
+         distance *= Ai.Owner.MoveSpeedMul; // Apply speed modifier
+         if (distance < 0.01f)
+@@ -1239,8 +1239,8 @@ public void MoveTowards(Vector3 other, float distance, byte flags = 4)
+         moveType.RotationX = rx;
+         moveType.RotationY = ry;
+         moveType.RotationZ = rz;
+-        moveType.ActorFlags = flags;     // 5-walk, 4-run, 3-stand still
+-        moveType.Flags = 4;
++        moveType.ActorFlags = actorFlags;     // 5-walk, 4-run, 3-stand still
++        moveType.Flags = MoveTypeFlags.Moving | (IsInBattle ? MoveTypeFlags.InCombat : 0);; // MoveTypeFlags.Stopping;
+ 
+         moveType.DeltaMovement = new sbyte[3];
+         moveType.DeltaMovement[0] = 0;
+@@ -1278,7 +1278,7 @@ public void LookTowards(Vector3 other, byte flags = 4)
+         moveType.RotationY = ry;
+         moveType.RotationZ = rz;
+         moveType.ActorFlags = flags;     // 5-walk, 4-run, 3-stand still
+-        moveType.Flags = 4;
++        moveType.Flags = MoveTypeFlags.Moving | (IsInBattle ? MoveTypeFlags.InCombat : 0);; // 4;
+ 
+         moveType.DeltaMovement = new sbyte[3];
+         moveType.DeltaMovement[0] = 0;
+@@ -1305,7 +1305,7 @@ public void StopMovement()
+         moveType.RotationX = 0;
+         moveType.RotationY = 0;
+         moveType.RotationZ = Transform.Local.ToRollPitchYawSBytesMovement().Item3;
+-        moveType.Flags = 4;
++        moveType.Flags = MoveTypeFlags.Stopping | (IsInBattle ? MoveTypeFlags.InCombat : 0); // 4;
+         moveType.DeltaMovement = new sbyte[3];
+         moveType.DeltaMovement[0] = 0;
+         moveType.DeltaMovement[1] = 0;
+diff --git a/AAEmu.Game/Models/Game/Skills/SkillControllers/LeapSkillController.cs b/AAEmu.Game/Models/Game/Skills/SkillControllers/LeapSkillController.cs
+index f1cadb2c86..be3ecef338 100644
+--- a/AAEmu.Game/Models/Game/Skills/SkillControllers/LeapSkillController.cs
++++ b/AAEmu.Game/Models/Game/Skills/SkillControllers/LeapSkillController.cs
+@@ -7,6 +7,7 @@
+ using AAEmu.Game.Models.Game.Skills.Templates;
+ using AAEmu.Game.Models.Game.Units;
+ using AAEmu.Game.Models.Game.Units.Movements;
++using AAEmu.Game.Models.StaticValues;
+ using AAEmu.Game.Utils;
+ 
+ namespace AAEmu.Game.Models.Game.Skills.SkillControllers;
+@@ -71,7 +72,7 @@ public override void End()
+         TickManager.Instance.OnTick.UnSubscribe(Tick);
+     }
+ 
+-    public void MoveTowards(float distance, byte flags = 4)
++    public void MoveTowards(float distance, byte actorFlags = 4)
+     {
+         distance *= Owner.MoveSpeedMul; // Apply speed modifier
+         if (distance < 0.01f)
+@@ -138,8 +139,8 @@ public void MoveTowards(float distance, byte flags = 4)
+         moveType.RotationX = rx;
+         moveType.RotationY = ry;
+         moveType.RotationZ = rz;
+-        moveType.ActorFlags = flags;     // 5-walk, 4-run, 3-stand still
+-        moveType.Flags = 4;
++        moveType.ActorFlags = actorFlags;     // 5-walk, 4-run, 3-stand still
++        moveType.Flags = MoveTypeFlags.Moving; // 4
+ 
+         moveType.DeltaMovement = new sbyte[3];
+         moveType.DeltaMovement[0] = 0;
+diff --git a/AAEmu.Game/Models/Game/Units/Buffs.cs b/AAEmu.Game/Models/Game/Units/Buffs.cs
+index d1fb6a74aa..382c0d84c6 100644
+--- a/AAEmu.Game/Models/Game/Units/Buffs.cs
++++ b/AAEmu.Game/Models/Game/Units/Buffs.cs
+@@ -246,7 +246,7 @@ public int GetBuffCountById(uint buffId)
+         return count;
+     }
+ 
+-    public void GetAllBuffs(List<Buff> goodBuffs, List<Buff> badBuffs, List<Buff> hiddenBuffs)
++    public void GetAllBuffs(List<Buff> goodBuffs, List<Buff> badBuffs, List<Buff> hiddenBuffs, bool includeAllPassives)
+     {
+         // Create a copy of the list of effects to avoid changing the list while iterating
+         IEnumerable<Buff> effects;
+@@ -257,16 +257,20 @@ public void GetAllBuffs(List<Buff> goodBuffs, List<Buff> badBuffs, List<Buff> hi
+ 
+         foreach (var buff in effects.ToList())
+         {
+-            if (buff.Passive) continue;
+             switch (buff.Template.Kind)
+             {
+                 case BuffKind.Good:
++                    if (buff.Passive && !includeAllPassives)
++                        continue;
+                     goodBuffs.Add(buff);
+                     break;
+                 case BuffKind.Bad:
++                    if (buff.Passive && !includeAllPassives)
++                        continue;
+                     badBuffs.Add(buff);
+                     break;
+                 case BuffKind.Hidden:
++                    // Always include passives of Hidden Buffs, required by for example WorldBoss and Queen Bee captures
+                     hiddenBuffs.Add(buff);
+                     break;
+                 default:
+diff --git a/AAEmu.Game/Models/Game/Units/IBuffs.cs b/AAEmu.Game/Models/Game/Units/IBuffs.cs
+index 6fd36b4fbc..dd1550ce28 100644
+--- a/AAEmu.Game/Models/Game/Units/IBuffs.cs
++++ b/AAEmu.Game/Models/Game/Units/IBuffs.cs
+@@ -17,7 +17,7 @@ public interface IBuffs
+     bool CheckBuffTag(uint tagId);
+     bool CheckDamageImmune(DamageType damageType);
+     IEnumerable<Buff> GetAbsorptionEffects();
+-    void GetAllBuffs(List<Buff> goodBuffs, List<Buff> badBuffs, List<Buff> hiddenBuffs);
++    void GetAllBuffs(List<Buff> goodBuffs, List<Buff> badBuffs, List<Buff> hiddenBuffs, bool includeAllPassives);
+     int GetBuffCountById(uint buffId);
+     IEnumerable<Buff> GetBuffsRequiring(uint buffId);
+     Buff GetEffectByIndex(uint index);
+diff --git a/AAEmu.Game/Models/Game/Units/Movements/MoveType.cs b/AAEmu.Game/Models/Game/Units/Movements/MoveType.cs
+index 3dd32ab550..e030e9af71 100644
+--- a/AAEmu.Game/Models/Game/Units/Movements/MoveType.cs
++++ b/AAEmu.Game/Models/Game/Units/Movements/MoveType.cs
+@@ -2,6 +2,7 @@
+ 
+ using AAEmu.Commons.Network;
+ using AAEmu.Game.Models.Game.World;
++using AAEmu.Game.Models.StaticValues;
+ 
+ namespace AAEmu.Game.Models.Game.Units.Movements;
+ 
+@@ -20,13 +21,13 @@ public abstract class MoveType : PacketMarshaler
+     public MoveTypeEnum Type { get; set; }
+     public uint Time { get; set; }
+     public WorldPos WorldPos { get; set; }
+-    public byte Flags { get; set; }
++    public MoveTypeFlags Flags { get; set; }
+     public uint ScType { get; set; }
+     public byte Phase { get; set; }
+     public float X { get; set; }
+     public float Y { get; set; }
+     public float Z { get; set; }
+-    public Quaternion Rot { get; set; } // значение поворота по оси Z должно быть в радианах
++    public Quaternion Rot { get; set; } // Z-axis rotation value must be in radians
+     public Vector3 Velocity { get; set; }
+     public short VelX { get; set; }
+     public short VelY { get; set; }
+@@ -38,8 +39,8 @@ public abstract class MoveType : PacketMarshaler
+     public override void Read(PacketStream stream)
+     {
+         Time = stream.ReadUInt32();
+-        Flags = stream.ReadByte();
+-        if ((Flags & 0x10) == 0x10)
++        Flags = (MoveTypeFlags)stream.ReadByte();
++        if (Flags.HasFlag(MoveTypeFlags.HasScTypeAndPhase))
+         {
+             ScType = stream.ReadUInt32();
+             Phase = stream.ReadByte();
+@@ -50,8 +51,8 @@ public override void Read(PacketStream stream)
+     public override PacketStream Write(PacketStream stream)
+     {
+         stream.Write(Time);
+-        stream.Write(Flags);
+-        if ((Flags & 0x10) == 0x10)
++        stream.Write((byte)Flags);
++        if (Flags.HasFlag(MoveTypeFlags.HasScTypeAndPhase))
+         {
+             stream.Write(ScType);
+             stream.Write(Phase);
+diff --git a/AAEmu.Game/Models/StaticValues/MoveTypeFlags.cs b/AAEmu.Game/Models/StaticValues/MoveTypeFlags.cs
+index 176fc8b1f4..64d2ac1ad9 100644
+--- a/AAEmu.Game/Models/StaticValues/MoveTypeFlags.cs
++++ b/AAEmu.Game/Models/StaticValues/MoveTypeFlags.cs
+@@ -2,21 +2,40 @@
+ 
+ namespace AAEmu.Game.Models.StaticValues;
+ 
++/// <summary>
++/// 0x02 = Is Moving
++/// 0x04 = Is Stopping
++/// 0x06 = Is Jumping (Stop+Move)
++/// 0x08 = Is in Combat?
++/// 0x10 = Has ScType and Phase,
++/// 0x40 = Is standing on object GcId
++/// </summary>
+ [Flags]
+ public enum MoveTypeFlags : byte
+ {
+     None = 0x00,
++    _flag1 = 0x01,
+     Moving = 0x02,
+-    Stopping = 0x04, // this might be more accurately named, breaking
+-    Jumping = 0x06, // Jumping seems to be the exception here as it combines moving and stopping
+-    StandingOnObject = 0x40
++    Stopping = 0x04, // This might be more accurately named, breaking
++    InCombat = 0x08, // Set when fighting
++    HasScTypeAndPhase = 0x10,
++    _flag6 = 0x20,
++    StandingOnObject = 0x40,
++    _flag8 = 0x80,
++
++    Jumping = Moving | Stopping, // Jumping seems to be the exception here as it combines moving and stopping
+ }
+ 
++[Flags]
+ public enum MoveTypeActorFlags : byte
+ {
+     None = 0x00,
++    _flag1 = 0x01,
++    _flag2 = 0x02,
+     StandingOnSolid = 0x04,
++    _flag4 = 0x08,
+     Jumping = 0x10, // Jumping seems to be the exception here as it combines moving and stopping
+     StandingOnObject = 0x20, // same as moveTypeFlag 0x40
+-    HangingFromObject = 0x40 // When we are somehow "sticking" to another object, but don't have it as a parent object
++    HangingFromObject = 0x40, // When we are somehow "sticking" to another object, but don't have it as a parent object
++    _flag8 = 0x80,
+ }
+diff --git a/AAEmu.Game/Scripts/Commands/AddBuff.cs b/AAEmu.Game/Scripts/Commands/AddBuff.cs
+index 4fd4da13c8..122406d90f 100644
+--- a/AAEmu.Game/Scripts/Commands/AddBuff.cs
++++ b/AAEmu.Game/Scripts/Commands/AddBuff.cs
+@@ -1,11 +1,15 @@
+ ﻿using System;
+ using System.Collections.Generic;
++using System.Linq;
+ using AAEmu.Game.Core.Managers;
++using AAEmu.Game.GameData;
+ using AAEmu.Game.Models.Game;
+ using AAEmu.Game.Models.Game.Char;
++using AAEmu.Game.Models.Game.NPChar;
+ using AAEmu.Game.Models.Game.Skills;
+ using AAEmu.Game.Models.Game.Units;
+ using AAEmu.Game.Utils.Scripts;
++using Discord;
+ 
+ namespace AAEmu.Game.Scripts.Commands;
+ 
+@@ -48,6 +52,9 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+             return;
+         }
+         targetUnit = selectedUnit;
++        var userFriendlyName = string.Empty;
++        if (targetUnit is Npc targetNpc)
++            userFriendlyName = $"@NPC_NAME({targetNpc.TemplateId})";
+ 
+         var a0 = args[0].ToLower();
+         if ((a0 == "view") || (a0 == "v"))
+@@ -55,17 +62,37 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+             var goodBuffs = new List<Buff>();
+             var badBuffs = new List<Buff>();
+             var hiddenBuffs = new List<Buff>();
+-            selectedUnit.Buffs.GetAllBuffs(goodBuffs, badBuffs, hiddenBuffs);
++            selectedUnit.Buffs.GetAllBuffs(goodBuffs, badBuffs, hiddenBuffs, true);
+ 
++            var tags = new List<uint>();
+             if (goodBuffs.Count + badBuffs.Count + hiddenBuffs.Count > 0)
+             {
+-                character.SendMessage($"[AddBuff] Listing buffs for {selectedUnit.ObjId} - {selectedUnit.Name} !");
++                character.SendMessage($"[AddBuff] Listing buffs for {targetUnit.ObjId} - {targetUnit.Name} {userFriendlyName} !");
+                 foreach (var b in goodBuffs)
+-                    character.SendMessage($"[AddBuff] |cFF00FF00{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                {
++                    tags.AddRange(TagsGameData.Instance.GetTagsByTargetId(TagsGameData.TagType.Buffs, b.Template.Id));
++                    character.SendMessage(
++                        $"[AddBuff] |cFF00FF00{(b.Passive ? "Passive " : "")}{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                }
++
+                 foreach (var b in badBuffs)
+-                    character.SendMessage($"[AddBuff] |cFFFF0000{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                {
++                    tags.AddRange(TagsGameData.Instance.GetTagsByTargetId(TagsGameData.TagType.Buffs, b.Template.Id));
++                    character.SendMessage(
++                        $"[AddBuff] |cFFFF0000{(b.Passive ? "Passive " : "")}{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                }
++
+                 foreach (var b in hiddenBuffs)
+-                    character.SendMessage($"[AddBuff] |cFF6666FF{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                {
++                    tags.AddRange(TagsGameData.Instance.GetTagsByTargetId(TagsGameData.TagType.Buffs, b.Template.Id));
++                    character.SendMessage(
++                        $"[AddBuff] |cFF6666FF{(b.Passive ? "Passive " : "")}{b.Template.Id} - {LocalizationManager.Instance.Get("buffs", "name", b.Template.Id)}|r");
++                }
++
++                if (tags.Count > 0)
++                {
++                    character.SendMessage($"[AddBuff] |cFF888888Tags: {string.Join(",",tags)}|r");
++                }
+             }
+             else
+             {
+diff --git a/AAEmu.Game/Scripts/Commands/Nrot.cs b/AAEmu.Game/Scripts/Commands/Nrot.cs
+index 7b6a9fcfdb..fa9f1a7b0b 100644
+--- a/AAEmu.Game/Scripts/Commands/Nrot.cs
++++ b/AAEmu.Game/Scripts/Commands/Nrot.cs
+@@ -5,6 +5,7 @@
+ using AAEmu.Game.Models.Game.Char;
+ using AAEmu.Commons.Utils;
+ using AAEmu.Game.Models.Game.Models;
++using AAEmu.Game.Models.StaticValues;
+ using NLog;
+ using AAEmu.Game.Utils.Scripts;
+ 
+@@ -73,7 +74,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+             moveType.RotationY = characterRot.Item2;
+             moveType.RotationZ = characterRot.Item3;
+ 
+-            moveType.Flags = 5;
++            moveType.Flags = MoveTypeFlags.Moving;
+             moveType.DeltaMovement = new sbyte[3];
+             moveType.DeltaMovement[0] = 0;
+             moveType.DeltaMovement[1] = 0;
+diff --git a/AAEmu.Game/Scripts/Commands/UseSkill.cs b/AAEmu.Game/Scripts/Commands/UseSkill.cs
+index 9d38bf48b3..6a419ec0f1 100644
+--- a/AAEmu.Game/Scripts/Commands/UseSkill.cs
++++ b/AAEmu.Game/Scripts/Commands/UseSkill.cs
+@@ -45,9 +45,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+ 
+         if (args[0] == "target")
+         {
+-            var temp = source;
+-            source = target;
+-            target = temp;
++            (source, target) = (target, source);
+             argsIdx++;
+         }
+ 
+diff --git a/AAEmu.Game/Scripts/SubCommands/Npcs/NpcPositionSubCommand.cs b/AAEmu.Game/Scripts/SubCommands/Npcs/NpcPositionSubCommand.cs
+index 1831f7ebb6..96a8abd13f 100644
+--- a/AAEmu.Game/Scripts/SubCommands/Npcs/NpcPositionSubCommand.cs
++++ b/AAEmu.Game/Scripts/SubCommands/Npcs/NpcPositionSubCommand.cs
+@@ -7,6 +7,7 @@
+ using AAEmu.Game.Models.Game.Models;
+ using AAEmu.Game.Models.Game.NPChar;
+ using AAEmu.Game.Models.Game.Units.Movements;
++using AAEmu.Game.Models.StaticValues;
+ using AAEmu.Game.Utils;
+ using AAEmu.Game.Utils.Scripts;
+ using AAEmu.Game.Utils.Scripts.SubCommands;
+@@ -72,12 +73,12 @@ public override void Execute(ICharacter character, string triggerArgument, IDict
+         moveType.RotationY = npcRot.Item2;
+         moveType.RotationZ = npcRot.Item3;
+ 
+-        moveType.Flags = 5;
++        moveType.Flags = MoveTypeFlags.Moving ;
+         moveType.DeltaMovement = new sbyte[3];
+         moveType.DeltaMovement[0] = 0;
+         moveType.DeltaMovement[1] = 0;
+         moveType.DeltaMovement[2] = 0;
+-        moveType.Stance = GameStanceType.Combat; // 0; // combat=0, idle=1
++        moveType.Stance = GameStanceType.Relaxed; // 0; // combat=0, idle=1
+         moveType.Alertness = MoveTypeAlertness.Idle; // idle=0, combat=2
+         moveType.Time += 50;    // has to change all the time for normal motion.
+         character.BroadcastPacket(new SCOneUnitMovementPacket(npc.ObjId, moveType), true);
