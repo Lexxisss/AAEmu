@@ -1,23 +1,93 @@
-From 62e8cec650ab1bfcd0e8ed893e5b44b8af07c820 Mon Sep 17 00:00:00 2001
+From 5575b07177950b2b0d44e279d230f8f9c6b01104 Mon Sep 17 00:00:00 2001
 From: Donella Kreiger <ahlyl94@gmail.com>
-Date: Mon, 12 Aug 2024 18:30:13 +0800
-Subject: [PATCH] [Game] Fixed an error when resetting daily tasks to get the
- time, `Today` is the local time zone (#1073)
+Date: Tue, 13 Aug 2024 19:58:26 +0800
+Subject: [PATCH] [Game] Implement escape effect (#1075)
 
+* [Game] Implement escape effect
+
+* [Game] Fix the character's inability to obtain resurrection points while in the dungeon
 ---
- AAEmu.Game/Models/Game/Char/CharacterQuests.cs | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ .../Skills/Effects/SpecialEffects/Escape.cs   | 45 +++++++++++++++++--
+ AAEmu.Game/Models/Game/Skills/Skill.cs        |  2 +-
+ 2 files changed, 43 insertions(+), 4 deletions(-)
 
-diff --git a/AAEmu.Game/Models/Game/Char/CharacterQuests.cs b/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
-index 83aaa5d27..099c1fdb7 100644
---- a/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
-+++ b/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
-@@ -607,7 +607,7 @@ public void CheckDailyResetAtLogin()
-         // TODO: Put Server timezone offset in configuration file, currently using local machine midnight
-         // var utcDelta = DateTime.Now - DateTime.UtcNow;
-         // var isOld = (DateTime.Today + utcDelta - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
--        var isOld = (DateTime.Today - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
-+        var isOld = (DateTime.UtcNow.Date - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
-         if (isOld)
-             ResetDailyQuests(false);
+diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
+index 11772cf5f5..9d018d6384 100644
+--- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
++++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
+@@ -1,5 +1,7 @@
+ ﻿using System;
+-
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.World;
++using AAEmu.Game.Core.Packets.G2C;
+ using AAEmu.Game.Models.Game.Char;
+ using AAEmu.Game.Models.Game.Units;
+ 
+@@ -7,6 +9,7 @@ namespace AAEmu.Game.Models.Game.Skills.Effects.SpecialEffects;
+ 
+ public class Escape : SpecialEffectAction
+ {
++    protected override SpecialType SpecialEffectActionType => SpecialType.Escape;
+     public override void Execute(BaseUnit caster,
+         SkillCaster casterObj,
+         BaseUnit target,
+@@ -20,7 +23,43 @@ public override void Execute(BaseUnit caster,
+         int value3,
+         int value4)
+     {
+-        // TODO ...
+-        if (caster is Character) { Logger.Debug("Special effects: Escape value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4); }
++        
++        if (caster is Character character)
++        {
++            Logger.Debug("Special effects: Escape value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4);
++            
++            var portal = new Portal();
++            
++            if (WorldManager.DefaultInstanceId != character.InstanceId)
++            {
++                // var portal = PortalManager.Instance.GetClosestReturnPortal(character);
++                // character.Transform.World;
++                var w = WorldManager.Instance.GetWorld(character.InstanceId);
++                if (w == null)
++                {
++                    return;
++                }
++                portal.X = w.SpawnPosition.X;
++                portal.Y = w.SpawnPosition.Y;
++                portal.Z = w.SpawnPosition.Z;
++                portal.ZRot = w.SpawnPosition.Roll;
++            }
++            else
++            {
++                portal = PortalManager.Instance.GetClosestReturnPortal(character); 
++            }
++            
++            // force transported out
++            character.BroadcastPacket(
++                new SCCharacterResurrectedPacket(
++                    character.ObjId,
++                    portal.X,
++                    portal.Y,
++                    portal.Z,
++                    portal.ZRot
++                ),
++                true
++            );
++        }
      }
+ }
+diff --git a/AAEmu.Game/Models/Game/Skills/Skill.cs b/AAEmu.Game/Models/Game/Skills/Skill.cs
+index 75f8a988bb..f9ca602f4d 100644
+--- a/AAEmu.Game/Models/Game/Skills/Skill.cs
++++ b/AAEmu.Game/Models/Game/Skills/Skill.cs
+@@ -249,7 +249,7 @@ public SkillResult Use(BaseUnit caster, SkillCaster casterCaster, SkillCastTarge
+ 
+         if (Template.Effects.Count > 0 && Template.Effects.First()?.Template is OpenPortalEffect)
+         {
+-            if (0 != caster.InstanceId)
++            if (WorldManager.DefaultInstanceId != caster.InstanceId)
+             {
+                 return SkillResult.InvalidLocation;
+             }
