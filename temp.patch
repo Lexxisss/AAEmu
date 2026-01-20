@@ -1,176 +1,23 @@
-From 04531e88303afb774158ce26abce8c7f1587ee99 Mon Sep 17 00:00:00 2001
-From: NLObP <38990417+NL0bP@users.noreply.github.com>
-Date: Sat, 10 Aug 2024 15:55:57 +0300
-Subject: [PATCH] [Game] WIP: Added AchievementGameData for loading
- definitions; (#1069)
+From 62e8cec650ab1bfcd0e8ed893e5b44b8af07c820 Mon Sep 17 00:00:00 2001
+From: Donella Kreiger <ahlyl94@gmail.com>
+Date: Mon, 12 Aug 2024 18:30:13 +0800
+Subject: [PATCH] [Game] Fixed an error when resetting daily tasks to get the
+ time, `Today` is the local time zone (#1073)
 
-* [Game] WIP: Added AchievementGameData for loading definitions;
-
-* Removed extra lines with `using`
 ---
- AAEmu.Game/GameData/AchievementGameData.cs    | 131 ++++++++++++++++++
- .../Models/Game/Achievement/Achievements.cs   |   5 +-
- 2 files changed, 134 insertions(+), 2 deletions(-)
- create mode 100644 AAEmu.Game/GameData/AchievementGameData.cs
+ AAEmu.Game/Models/Game/Char/CharacterQuests.cs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/AAEmu.Game/GameData/AchievementGameData.cs b/AAEmu.Game/GameData/AchievementGameData.cs
-new file mode 100644
-index 000000000..0d8971f82
---- /dev/null
-+++ b/AAEmu.Game/GameData/AchievementGameData.cs
-@@ -0,0 +1,131 @@
-+﻿using System.Collections.Generic;
-+
-+using AAEmu.Commons.Utils;
-+using AAEmu.Game.GameData.Framework;
-+using AAEmu.Game.Models.Game.Achievement;
-+using AAEmu.Game.Models.Game.Achievement.Enums;
-+using AAEmu.Game.Utils.DB;
-+
-+using Microsoft.Data.Sqlite;
-+
-+using NLog;
-+
-+namespace AAEmu.Game.GameData;
-+
-+[GameData]
-+public class AchievementGameData : Singleton<AchievementGameData>, IGameDataLoader
-+{
-+    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
-+
-+    private Dictionary<uint, CharRecords> _charRecords;
-+    private Dictionary<uint, Achievements> _achievements;
-+    private Dictionary<uint, List<AchievementObjectives>> _achievementObjectives;
-+    private Dictionary<uint, List<PreCompletedAchievements>> _preCompletedAchievements;
-+
-+    public void Load(SqliteConnection connection)
-+    {
-+        _charRecords = new Dictionary<uint, CharRecords>();
-+        _achievements = new Dictionary<uint, Achievements>();
-+        _achievementObjectives = new Dictionary<uint, List<AchievementObjectives>>();
-+        _preCompletedAchievements = new Dictionary<uint, List<PreCompletedAchievements>>();
-+
-+        using (var command = connection.CreateCommand())
-+        {
-+            command.CommandText = "SELECT * FROM achievements";
-+            command.Prepare();
-+            using (var sqliteReader = command.ExecuteReader())
-+            using (var reader = new SQLiteWrapperReader(sqliteReader))
-+            {
-+                while (reader.Read())
-+                {
-+                    var template = new Achievements();
-+                    template.Id = reader.GetUInt32("id");
-+                    template.CategoryId = reader.GetUInt32("category_id", 0);
-+                    template.CompleteNum = reader.GetUInt32("complete_num", 0);
-+                    template.CompleteOr = reader.GetBoolean("complete_or");
-+                    template.IconId = reader.GetUInt32("icon_id", 0);
-+                    template.IsActive = reader.GetBoolean("is_active");
-+                    template.IsHidden = reader.GetBoolean("is_hidden");
-+                    template.ItemId = reader.GetUInt32("item_id", 0);
-+                    template.OrUnitReqs = reader.GetBoolean("or_unit_reqs");
-+                    template.ParentAchievementId = reader.GetUInt32("parent_achievement_id", 0);
-+                    template.Priority = reader.GetUInt32("priority", 0);
-+                    template.SubCategoryId = reader.GetUInt32("sub_category_id", 0);
-+
-+                    _achievements.TryAdd(template.Id, template);
-+                }
-+            }
-+        }
-+
-+        using (var command = connection.CreateCommand())
-+        {
-+            command.CommandText = "SELECT * FROM achievement_objectives";
-+            command.Prepare();
-+            using (var sqliteReader = command.ExecuteReader())
-+            using (var reader = new SQLiteWrapperReader(sqliteReader))
-+            {
-+                while (reader.Read())
-+                {
-+                    var template = new AchievementObjectives();
-+                    template.Id = reader.GetUInt32("id");
-+                    template.AchievementId = reader.GetUInt32("achievement_id");
-+                    template.OrUnitReqs = reader.GetBoolean("or_unit_reqs");
-+                    template.RecordId = reader.GetUInt32("record_id");
-+
-+                    if (!_achievementObjectives.ContainsKey(template.AchievementId))
-+                    {
-+                        _achievementObjectives.Add(template.AchievementId, new List<AchievementObjectives>());
-+                    }
-+                    _achievementObjectives[template.AchievementId].Add(template);
-+                }
-+            }
-+        }
-+
-+        using (var command = connection.CreateCommand())
-+        {
-+            command.CommandText = "SELECT * FROM pre_completed_achievements";
-+            command.Prepare();
-+            using (var sqliteReader = command.ExecuteReader())
-+            using (var reader = new SQLiteWrapperReader(sqliteReader))
-+            {
-+                while (reader.Read())
-+                {
-+                    var template = new PreCompletedAchievements();
-+                    template.Id = reader.GetUInt32("id");
-+                    template.CompletedAchievementId = reader.GetUInt32("completed_achievement_id");
-+                    template.MyAchievementId = reader.GetUInt32("my_achievement_id");
-+
-+                    if (!_preCompletedAchievements.ContainsKey(template.CompletedAchievementId))
-+                    {
-+                        _preCompletedAchievements.Add(template.CompletedAchievementId, new List<PreCompletedAchievements>());
-+                    }
-+                    _preCompletedAchievements[template.CompletedAchievementId].Add(template);
-+                }
-+            }
-+        }
-+
-+        using (var command = connection.CreateCommand())
-+        {
-+            command.CommandText = "SELECT * FROM char_records";
-+            command.Prepare();
-+            using (var sqliteReader = command.ExecuteReader())
-+            using (var reader = new SQLiteWrapperReader(sqliteReader))
-+            {
-+                while (reader.Read())
-+                {
-+                    var template = new CharRecords();
-+                    template.Id = reader.GetUInt32("id");
-+                    template.KindId = (CharRecordKind)reader.GetUInt32("kind_id");
-+                    template.Value1 = reader.GetUInt32("value1");
-+                    template.Value2 = reader.GetUInt32("value2");
-+
-+                    _charRecords.Add(template.Id, template);
-+                }
-+            }
-+        }
-+    }
-+
-+    public void PostLoad()
-+    {
-+    }
-+}
-diff --git a/AAEmu.Game/Models/Game/Achievement/Achievements.cs b/AAEmu.Game/Models/Game/Achievement/Achievements.cs
-index 7bbfc95e0..39fb1591e 100644
---- a/AAEmu.Game/Models/Game/Achievement/Achievements.cs
-+++ b/AAEmu.Game/Models/Game/Achievement/Achievements.cs
-@@ -1,4 +1,5 @@
- ﻿using System.Collections.Generic;
-+
- using AAEmu.Game.Models.Game.Items.Templates;
- 
- namespace AAEmu.Game.Models.Game.Achievement
-@@ -15,11 +16,11 @@ public Achievements()
-         public uint CompleteNum { get; set; }
-         public bool CompleteOr { get; set; }
-         public string Description { get; set; }
--        public uint GradeId { get; set; }
-+        //public uint GradeId { get; set; }
-         public uint IconId { get; set; }
-         public bool IsActive { get; set; }
-         public bool IsHidden { get; set; }
--        public uint ItemNum { get; set; }
-+        //public uint ItemNum { get; set; }
-         public uint ItemId { get; set; }
-         public string Name { get; set; }
-         public bool OrUnitReqs { get; set; }
+diff --git a/AAEmu.Game/Models/Game/Char/CharacterQuests.cs b/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
+index 83aaa5d27..099c1fdb7 100644
+--- a/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
++++ b/AAEmu.Game/Models/Game/Char/CharacterQuests.cs
+@@ -607,7 +607,7 @@ public void CheckDailyResetAtLogin()
+         // TODO: Put Server timezone offset in configuration file, currently using local machine midnight
+         // var utcDelta = DateTime.Now - DateTime.UtcNow;
+         // var isOld = (DateTime.Today + utcDelta - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
+-        var isOld = (DateTime.Today - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
++        var isOld = (DateTime.UtcNow.Date - Owner.LeaveTime.Date) >= TimeSpan.FromDays(1);
+         if (isOld)
+             ResetDailyQuests(false);
+     }
