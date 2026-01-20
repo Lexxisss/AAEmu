@@ -1,183 +1,252 @@
-From 79453ada6c7790ffb105385d1062ebc72a92e079 Mon Sep 17 00:00:00 2001
-From: ZeromusXYZ <zeromus.xyz@gmail.com>
-Date: Fri, 16 Aug 2024 07:31:04 +0200
-Subject: [PATCH] [Game] Update to equipment change packet code and pet gear
- bonusses (#1079)
+From b016955d4223aa2892bda4f4345119c484592fe3 Mon Sep 17 00:00:00 2001
+From: NLObP <38990417+NL0bP@users.noreply.github.com>
+Date: Fri, 16 Aug 2024 23:16:41 +0300
+Subject: [PATCH] Merge errors fixed;
 
-* [Game] Simplified Equipment changing packets
-
-- Added a optional Fix argument to the ``/showinventory`` command that can try to fix duplicate item slot entries
-- Added missing check for adding attribute bonuses from equipped gear
-- Added ``UpdateGearBonuses`` to Mate (pet gear) and Slave spawns (customization parts)
-- Added helper struct ``ItemAndLocation`` to it's own file
-- Move Mate Equipment Changed packets to the ``MateEquipment`` container's events
-- Added ``Success`` argument to ``SCMateEquipmentChangedPacket``
-- Added ``ToString`` for ``ItemLocation`` and ``ItemIdAndLocation``
-
-* [Test] Update for ItemContainer
 ---
- AAEmu.Game/Core/Managers/HousingManager.cs    |   2 +-
- AAEmu.Game/Core/Managers/ItemManager.cs       |  27 +-
- AAEmu.Game/Core/Managers/SlaveManager.cs      |   3 +
- .../C2G/CSChangeMateEquipmentPacket.cs        | 124 +++---
- .../Core/Packets/C2G/CSSwapItemsPacket.cs     |   4 +-
- .../G2C/SCMateEquipmentChangedPacket.cs       |  89 ++--
- AAEmu.Game/Models/Game/Char/Character.cs      |  29 +-
- .../Models/Game/Char/CharacterEquipment.cs    | 385 ----------------
- AAEmu.Game/Models/Game/Char/CharacterMates.cs |   4 +-
- AAEmu.Game/Models/Game/Char/ICharacter.cs     |   2 -
- AAEmu.Game/Models/Game/Char/Inventory.cs      | 173 +++-----
- .../Models/Game/Items/Actions/ItemRemove.cs   |  10 +
- .../Game/Items/Containers/CofferContainer.cs  |   2 +-
- .../Items/Containers/EquipmentContainer.cs    |  19 +-
- .../Game/Items/Containers/ItemContainer.cs    |  57 ++-
- .../Containers/MateEquipmentContainer.cs      |  90 ++--
- .../Models/Game/Items/ItemAndLocation.cs      |  13 +
- .../Models/Game/Items/ItemIdAndLocation.cs    |  11 +-
- AAEmu.Game/Models/Game/Items/ItemLocation.cs  |   9 +-
- AAEmu.Game/Models/Game/Units/IUnit.cs         |   2 +
- AAEmu.Game/Models/Game/Units/Mate.cs          |   2 +-
- AAEmu.Game/Models/Game/Units/Unit.cs          | 410 +++++++++++++++++-
- AAEmu.Game/Scripts/Commands/ShowInventory.cs  |  91 +++-
- .../Game/Items/Containers/InventoryTests.cs   |   3 +-
- 24 files changed, 845 insertions(+), 716 deletions(-)
- delete mode 100644 AAEmu.Game/Models/Game/Char/CharacterEquipment.cs
- create mode 100644 AAEmu.Game/Models/Game/Items/ItemAndLocation.cs
+ AAEmu.Game/Core/Managers/MateManager.cs       |   1 -
+ AAEmu.Game/Core/Managers/SlaveManager.cs      |   2 +-
+ .../C2G/CSChangeMateEquipmentPacket.cs        | 134 +++++++-------
+ .../C2G/CSChangeSlaveEquipmentPacket.cs       | 172 ++++++++----------
+ .../G2C/SCMateEquipmentChangedPacket.cs       |  17 +-
+ .../G2C/SCSlaveEquipmentChangedPacket.cs      | 111 ++++++-----
+ AAEmu.Game/Models/Game/Char/Inventory.cs      |   3 +-
+ .../Models/Game/Items/Actions/ItemRemove.cs   |  39 ++--
+ .../Items/Containers/EquipmentContainer.cs    |   1 +
+ .../Game/Items/Containers/ItemContainer.cs    |   5 +-
+ .../Containers/MateEquipmentContainer.cs      |   2 +-
+ .../Containers/SlaveEquipmentContainer.cs     |  84 +++++----
+ AAEmu.Game/Models/Game/Units/Unit.cs          |  12 +-
+ AAEmu.Game/Scripts/Commands/ShowInventory.cs  |  12 +-
+ 14 files changed, 298 insertions(+), 297 deletions(-)
 
-diff --git a/AAEmu.Game/Core/Managers/HousingManager.cs b/AAEmu.Game/Core/Managers/HousingManager.cs
-index bcd3de4ee..58a744ff3 100644
---- a/AAEmu.Game/Core/Managers/HousingManager.cs
-+++ b/AAEmu.Game/Core/Managers/HousingManager.cs
-@@ -1062,7 +1062,7 @@ private void ReturnHouseItemsToOwner(House house, bool failedToPayTax, bool forc
-             {
-                 // TODO: Check if items should stay in the coffer when house is sold.
-                 // Move it to new owner's SystemContainer first so they don't get destroyed
--                var ownerSystemContainer = ItemManager.Instance.GetItemContainerForCharacter(house.OwnerId, SlotType.System);
-+                var ownerSystemContainer = ItemManager.Instance.GetItemContainerForCharacter(house.OwnerId, SlotType.System, null, 0);
-                 for (var i = coffer.ItemContainer.Items.Count - 1; i >= 0; i--)
-                 {
-                     var cofferItem = coffer.ItemContainer.Items[i];
-diff --git a/AAEmu.Game/Core/Managers/ItemManager.cs b/AAEmu.Game/Core/Managers/ItemManager.cs
-index b9ee34027..31a253600 100644
---- a/AAEmu.Game/Core/Managers/ItemManager.cs
-+++ b/AAEmu.Game/Core/Managers/ItemManager.cs
-@@ -1853,13 +1853,24 @@ private SlotType GetContainerSlotTypeByContainerId(ulong dbId)
-         return SlotType.None;
-     }
- 
--
--    public ItemContainer GetItemContainerForCharacter(uint characterId, SlotType slotType, uint mateId = 0)
-+    /// <summary>
-+    /// Grabs an existing container owned by a player
-+    /// </summary>
-+    /// <param name="characterId">Player Id</param>
-+    /// <param name="slotType">Container Type to get</param>
-+    /// <param name="parentUnit">If set, overrides the Parent Unit</param>
-+    /// <param name="mateId">Mate Id if a new container needs to be created</param>
-+    /// <returns></returns>
-+    public ItemContainer GetItemContainerForCharacter(uint characterId, SlotType slotType, Unit parentUnit, uint mateId)
-     {
--        foreach (var c in _allPersistentContainers)
-+        foreach (var c in _allPersistentContainers.Values)
-         {
--            if (c.Value.OwnerId == characterId && c.Value.ContainerType == slotType && c.Value.MateId == mateId)
--                return c.Value;
-+            if (c.OwnerId == characterId && c.ContainerType == slotType && c.MateId == mateId)
-+            {
-+                if (parentUnit != null)
-+                    c.ParentUnit = parentUnit;
-+                return c;
-+            }
-         }
- 
-         var newContainerType = slotType switch
-@@ -1870,7 +1881,7 @@ public ItemContainer GetItemContainerForCharacter(uint characterId, SlotType slo
-             _ => "ItemContainer"
-         };
- 
--        var newContainer = ItemContainer.CreateByTypeName(newContainerType, characterId, slotType, slotType != SlotType.None);
-+        var newContainer = ItemContainer.CreateByTypeName(newContainerType, characterId, slotType, slotType != SlotType.None, parentUnit);
- 
-         if (slotType != SlotType.None)
-             _allPersistentContainers.Add(newContainer.ContainerId, newContainer);
-@@ -1964,7 +1975,7 @@ public void LoadUserItems()
-                     var containerSize = reader.GetInt32("container_size");
-                     var containerOwnerId = reader.GetUInt32("owner_id");
-                     var containerMateId = reader.GetUInt32("mate_id");
--                    var container = ItemContainer.CreateByTypeName(containerType, containerOwnerId, slotType, false);
-+                    var container = ItemContainer.CreateByTypeName(containerType, containerOwnerId, slotType, false, null);
-                     container.ContainerId = containerId;
-                     container.ContainerSize = containerSize;
-                     container.MateId = containerMateId;
-@@ -2081,7 +2092,7 @@ public void LoadUserItems()
-                         if (item.OwnerId > 0)
-                         {
-                             // Item does have an owner, let's try to create a valid container for it
--                            var cContainer = GetItemContainerForCharacter((uint)item.OwnerId, item.SlotType);
-+                            var cContainer = GetItemContainerForCharacter((uint)item.OwnerId, item.SlotType, null, 0);
-                             if (cContainer.AddOrMoveExistingItem(ItemTaskType.Invalid, item, item.Slot))
-                             {
-                                 item.Slot = thisItemSlot;
+diff --git a/AAEmu.Game/Core/Managers/MateManager.cs b/AAEmu.Game/Core/Managers/MateManager.cs
+index 3e6c9060c5..de9fc6a4b1 100644
+--- a/AAEmu.Game/Core/Managers/MateManager.cs
++++ b/AAEmu.Game/Core/Managers/MateManager.cs
+@@ -8,7 +8,6 @@
+ using AAEmu.Game.Core.Network.Connections;
+ using AAEmu.Game.Core.Packets.G2C;
+ using AAEmu.Game.Models;
+-using AAEmu.Game.Models.Game;
+ using AAEmu.Game.Models.Game.Char;
+ using AAEmu.Game.Models.Game.DoodadObj.Static;
+ using AAEmu.Game.Models.Game.Items;
 diff --git a/AAEmu.Game/Core/Managers/SlaveManager.cs b/AAEmu.Game/Core/Managers/SlaveManager.cs
-index 36cd60293..593c68925 100644
+index 593c689250..65613f29e8 100644
 --- a/AAEmu.Game/Core/Managers/SlaveManager.cs
 +++ b/AAEmu.Game/Core/Managers/SlaveManager.cs
-@@ -884,6 +884,9 @@ public Slave Create(Character owner, SlaveSpawner useSpawner, uint templateId, I
-         //    Logger.Debug($"Loaded {doodadSpawnCount} doodads from DB for Slave {summonedSlave.ObjId} (Db: {summonedSlave.Id})");
-         //}
+@@ -740,7 +740,7 @@ public Slave Create(Character owner, SlaveSpawner useSpawner, uint templateId, I
+         }
  
-+        // Apply equipped gear (used for future parts customization)
-+        summonedSlave.UpdateGearBonuses(null, null);
-+
-         // Create all remaining doodads that where not previously loaded
-         foreach (var doodadBinding in summonedSlave.Template.DoodadBindings)
-         {
+         // TODO: Load Gear
+-        summonedSlave.Equipment = ItemManager.Instance.GetItemContainerForCharacter(owner.Id, SlotType.EquipmentSlave, summonedSlave.Id);
++        summonedSlave.Equipment = ItemManager.Instance.GetItemContainerForCharacter(owner.Id, SlotType.EquipmentSlave, summonedSlave, summonedSlave.Id);
+ 
+         // Equip it's default items
+         // TODO: Implement vehicle customization
 diff --git a/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs
-index fd3006f8f..bb82c0e0f 100644
+index bb82c0e0f0..7fad68b73a 100644
 --- a/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs
 +++ b/AAEmu.Game/Core/Packets/C2G/CSChangeMateEquipmentPacket.cs
-@@ -1,6 +1,4 @@
--﻿using System.Collections.Generic;
+@@ -13,88 +13,86 @@ public CSChangeMateEquipmentPacket() : base(CSOffsets.CSChangeMateEquipmentPacke
+     {
+     }
+ 
+-        public override void Read(PacketStream stream)
++    public override void Read(PacketStream stream)
++    {
++        // Owner PlayerId
++        var owningPlayerId = stream.ReadUInt32();
++        // Mate tl
++        var mateTl = stream.ReadUInt16();
++        // Should be Passenger PlayerId, but still reports 0 even when the seat is taken
++        // Maybe this was planned to be used if somehow somebody else than the owner is equipping gear onto the mount
++        var passengerPlayerId = stream.ReadUInt32();
++        // Seems to be always 0
++        var bts = stream.ReadBoolean();
++        // Always 1 for 1 item at a time
++        var itemCount = stream.ReadByte();
++
++        Logger.Debug($"ChangeMateEquipment - TlId: {mateTl}, Owner: {owningPlayerId}, Id2: {passengerPlayerId}, BTS: {bts}, Count: {itemCount}");
++
++        var character = Connection.ActiveChar;
++        var mate = MateManager.Instance.GetActiveMateByTlId(character.ObjId, mateTl);
++        if (mate == null)
+         {
+-            // Owner PlayerId
+-            var owningPlayerId = stream.ReadUInt32();
+-            // Mate tl
+-            var mateTl = stream.ReadUInt16();
+-            // Should be Passenger PlayerId, but still reports 0 even when the seat is taken
+-            // Maybe this was planned to be used if somehow somebody else than the owner is equipping gear onto the mount
+-            var passengerPlayerId = stream.ReadUInt32();
+-            // Seems to be always 0
+-            var bts = stream.ReadBoolean();
+-            // Always 1 for 1 item at a time
+-            var itemCount = stream.ReadByte();
+-
+-            Logger.Debug($"CSChangeMateEquipmentPacket - TlId: {mateTl}, Owner: {owningPlayerId}, Id2: {passengerPlayerId}, BTS: {bts}, Count: {itemCount}");
+-
+-            var mate = MateManager.Instance.GetActiveMateByTlId(mateTl);
+-            if (mate == null)
+-            {
+-                Logger.Warn($"ChangeMateEquipment, Unable to find mate with tlId {mateTl}!");
+-                return;
+-            }
++            Logger.Warn($"ChangeMateEquipment, Unable to find mate with tlId {mateTl}!");
++            return;
++        }
+ 
+-            if (itemCount == 0)
+-                return;
++        if (itemCount == 0)
++            return;
+ 
+-            // SlotType, SlotNum, Item
+-            var character = Connection.ActiveChar;
++        // SlotType, SlotNum, Item
++        for (var i = 0; i < itemCount; i++)
++        {
++            var playerItem = new ItemAndLocation();
++            var mateItem = new ItemAndLocation();
+ 
+-            for (var i = 0; i < itemCount; i++)
+-            {
+-                var playerItem = new ItemAndLocation();
+-                var mateItem = new ItemAndLocation();
++            playerItem.Item = new EquipItem();
++            playerItem.Item.Read(stream);
+ 
+-                playerItem.Item = new EquipItem();
+-                playerItem.Item.Read(stream);
++            mateItem.Item = new EquipItem();
++            mateItem.Item.Read(stream);
+ 
+-                mateItem.Item = new EquipItem();
+-                mateItem.Item.Read(stream);
++            playerItem.SlotType = (SlotType)stream.ReadByte();
++            playerItem.SlotNumber = stream.ReadByte();
+ 
+-                playerItem.SlotType = (SlotType)stream.ReadByte();
+-                playerItem.SlotNumber = stream.ReadByte();
++            mateItem.SlotType = (SlotType)stream.ReadByte();
++            mateItem.SlotNumber = stream.ReadByte();
+ 
+-                mateItem.SlotType = (SlotType)stream.ReadByte();
+-                mateItem.SlotNumber = stream.ReadByte();
++            var isEquip = playerItem.Item.TemplateId != 0;
+ 
+-                var isEquip = playerItem.Item.TemplateId != 0;
++            // Override the Read data with the actual Item data
++            var sourceContainer = character.Inventory.Bag;
++            var targetContainer = mate.Equipment;
++            playerItem.Item = (EquipItem)sourceContainer.GetItemBySlot(playerItem.SlotNumber);
++            mateItem.Item = (EquipItem)targetContainer.GetItemBySlot(mateItem.SlotNumber);
+ 
+-                // Override the Read data with the actual Item data
+-                var sourceContainer = character.Inventory.Bag;
+-                var targetContainer = mate.Equipment;
+-                playerItem.Item = (EquipItem)sourceContainer.GetItemBySlot(playerItem.SlotNumber);
+-                mateItem.Item = (EquipItem)targetContainer.GetItemBySlot(mateItem.SlotNumber);
++            // Logger.Debug($"{playerItem.SlotType} #{playerItem.SlotNumber} ItemId:{playerItem.Item?.Id ?? 0} -> {mateItem.SlotType} #{mateItem.SlotNumber} ItemId:{mateItem.Item?.Id ?? 0}");
++            // character.SendMessage($"MateEquip: {playerItem.SlotType} #{playerItem.SlotNumber} ItemId:{playerItem.Item?.Id ?? 0} -> {mateItem.SlotType} #{mateItem.SlotNumber} ItemId:{mateItem.Item?.Id ?? 0}");
+ 
+-                // Logger.Debug($"{playerItem.SlotType} #{playerItem.SlotNumber} ItemId:{playerItem.Item?.Id ?? 0} -> {mateItem.SlotType} #{mateItem.SlotNumber} ItemId:{mateItem.Item?.Id ?? 0}");
+-                // character.SendMessage($"MateEquip: {playerItem.SlotType} #{playerItem.SlotNumber} ItemId:{playerItem.Item?.Id ?? 0} -> {mateItem.SlotType} #{mateItem.SlotNumber} ItemId:{mateItem.Item?.Id ?? 0}");
++            // If un-equipping, swap the items around
++            if (!isEquip)
++            {
++                (playerItem, mateItem) = (mateItem, playerItem);
++                (sourceContainer, targetContainer) = (targetContainer, sourceContainer);
++            }
+ 
+-                // If un-equipping, swap the items around
+-                if (!isEquip)
+-                {
+-                    (playerItem, mateItem) = (mateItem, playerItem);
+-                    (sourceContainer, targetContainer) = (targetContainer, sourceContainer);
+-                }
++            //if (isEquip)
++            if (playerItem.Item != null)
++            {
++                var res = character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid,
++                    sourceContainer, targetContainer,
++                    playerItem.Item.Id, playerItem.SlotType, playerItem.SlotNumber,
++                    0, mateItem.SlotType, mateItem.SlotNumber);
+ 
+-                //if (isEquip)
+-                if (playerItem.Item != null)
++                // character.SendMessage($"SCMateEquipmentChanged - {(isEquip ? playerItem : mateItem)} -> {(isEquip ? mateItem : playerItem)}, MateTl: {mateTl} => Success {res}");
++                if (!res)
+                 {
+-                    var res = character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid,
+-                        sourceContainer, targetContainer,
+-                        playerItem.Item.Id, playerItem.SlotType, playerItem.SlotNumber,
+-                        0, mateItem.SlotType, mateItem.SlotNumber);
+-
+-                    // character.SendMessage($"SCMateEquipmentChanged - {(isEquip ? playerItem : mateItem)} -> {(isEquip ? mateItem : playerItem)}, MateTl: {mateTl} => Success {res}");
+-                    if (!res)
+-                    {
+-                        character.SendPacket(new SCMateEquipmentChangedPacket(
+-                            isEquip ? playerItem : mateItem,
+-                            isEquip ? mateItem : playerItem,
+-                            mateTl,
+-                            owningPlayerId, passengerPlayerId,
+-                            bts, res));
+-                    }
++                    character.SendPacket(new SCMateEquipmentChangedPacket(
++                        isEquip ? playerItem : mateItem,
++                        isEquip ? mateItem : playerItem,
++                        mateTl,
++                        owningPlayerId, passengerPlayerId,
++                        bts, res));
+                 }
+             }
+         }
+diff --git a/AAEmu.Game/Core/Packets/C2G/CSChangeSlaveEquipmentPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSChangeSlaveEquipmentPacket.cs
+index 623c81b3dd..9148aec35b 100644
+--- a/AAEmu.Game/Core/Packets/C2G/CSChangeSlaveEquipmentPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSChangeSlaveEquipmentPacket.cs
+@@ -1,127 +1,101 @@
+-﻿using System;
+-using System.Collections.Generic;
 -
 -using AAEmu.Commons.Network;
 +﻿using AAEmu.Commons.Network;
  using AAEmu.Game.Core.Managers;
  using AAEmu.Game.Core.Network.Game;
  using AAEmu.Game.Core.Packets.G2C;
-@@ -15,71 +13,87 @@ public CSChangeMateEquipmentPacket() : base(CSOffsets.CSChangeMateEquipmentPacke
-     {
-     }
+ using AAEmu.Game.Models.Game.Items;
+ using AAEmu.Game.Models.Game.Items.Actions;
  
--    public override void Read(PacketStream stream)
+-namespace AAEmu.Game.Core.Packets.C2G;
+-
+-public class CSChangeSlaveEquipmentPacket : GamePacket
++namespace AAEmu.Game.Core.Packets.C2G
+ {
+-    public CSChangeSlaveEquipmentPacket() : base(CSOffsets.CSChangeSlaveEquipmentPacket, 5)
 -    {
+-    }
+-
+-    public override void Read(PacketStream stream)
++    public class CSChangeSlaveEquipmentPacket : GamePacket
+     {
 -        var characterId = stream.ReadUInt32();
--        var tl = stream.ReadUInt16(); // mate tl
--        var passengerId = stream.ReadUInt32();
+-        var tl = stream.ReadUInt16(); // slave tl
+-        var DbSlaveId = stream.ReadUInt32();
 -        var bts = stream.ReadBoolean();
 -        var num = stream.ReadByte();
-+        public override void Read(PacketStream stream)
-+        {
-+            // Owner PlayerId
-+            var owningPlayerId = stream.ReadUInt32();
-+            // Mate tl
-+            var mateTl = stream.ReadUInt16();
-+            // Should be Passenger PlayerId, but still reports 0 even when the seat is taken
-+            // Maybe this was planned to be used if somehow somebody else than the owner is equipping gear onto the mount
-+            var passengerPlayerId = stream.ReadUInt32();
-+            // Seems to be always 0
-+            var bts = stream.ReadBoolean();
-+            // Always 1 for 1 item at a time
-+            var itemCount = stream.ReadByte();
- 
--        Logger.Debug($"ChangeMateEquipment, TlId: {tl}, Id: {characterId}, Id2: {passengerId}, BTS: {bts}, num: {num}");
-+            Logger.Debug($"CSChangeMateEquipmentPacket - TlId: {mateTl}, Owner: {owningPlayerId}, Id2: {passengerPlayerId}, BTS: {bts}, Count: {itemCount}");
- 
--        var mate = MateManager.Instance.GetActiveMateByTlId(Connection.ActiveChar.ObjId, tl);
--        if (mate == null)
--        {
--            Logger.Warn($"ChangeMateEquipment, Unable to find mate with tlId {tl}!");
+-
+-        Logger.Debug($"ChangeSlaveEquipment, TlId: {tl}, Id: {characterId}, Id2: {DbSlaveId}, BTS: {bts}, num: {num}");
+-
+-        var slave = SlaveManager.Instance.GetSlaveByTlId(tl);
+-        if (slave == null)
++        public CSChangeSlaveEquipmentPacket() : base(CSOffsets.CSChangeSlaveEquipmentPacket, 5)
+         {
+-            Logger.Warn($"ChangeSlaveEquipment, Unable to find slave with tlId {tl}!");
 -            return;
--        }
+         }
 -        if (num == 0)
 -            return;
 -        //                  SlotType, Slot, Item
@@ -186,45 +255,67 @@ index fd3006f8f..bb82c0e0f 100644
 -        var character = Connection.ActiveChar;
 -
 -        for (var i = 0; i < num; i++)
--        {
--            invItems[i].Item3 = new EquipItem();
++
++        public override void Read(PacketStream stream)
+         {
+-            invItems[i].Item3 = new Item();
 -            invItems[i].Item3.Read(stream);
-+            var mate = MateManager.Instance.GetActiveMateByTlId(mateTl);
-+            if (mate == null)
+-            invItems[i].Item3.ItemFlags = ItemFlag.SoulBound; // связанный
+-            invItems[i].Item3.ChargeUseSkillTime = DateTime.UtcNow;
++            // Owner PlayerId
++            var owningPlayerId = stream.ReadUInt32();
++            // Slave tl
++            var slaveTl = stream.ReadUInt16();
++            // Should be Passenger PlayerId, but still reports 0 even when the seat is taken
++            // Maybe this was planned to be used if somehow somebody else than the owner is equipping gear onto the mount
++            var passengerPlayerId = stream.ReadUInt32();
++            // Seems to be always 0
++            var bts = stream.ReadBoolean();
++            // Always 1 for 1 item at a time
++            var itemCount = stream.ReadByte();
++
++            Logger.Debug($"ChangeSlaveEquipment - TlId: {slaveTl}, Owner: {owningPlayerId}, Id2: {passengerPlayerId}, BTS: {bts}, Count: {itemCount}");
++
++            var character = Connection.ActiveChar;
++            var slave = SlaveManager.Instance.GetSlaveByTlId(slaveTl);
++            if (slave == null)
 +            {
-+                Logger.Warn($"ChangeMateEquipment, Unable to find mate with tlId {mateTl}!");
++                Logger.Warn($"ChangeMateEquipment, Unable to find mate with tlId {slaveTl}!");
 +                return;
 +            }
  
--            equipItems[i].Item3 = new EquipItem();
+-            equipItems[i].Item3 = new Item();
 -            equipItems[i].Item3.Read(stream);
+-            equipItems[i].Item3.ItemFlags = ItemFlag.SoulBound; // связанный
+-            equipItems[i].Item3.ChargeUseSkillTime = DateTime.UtcNow;
 +            if (itemCount == 0)
 +                return;
  
 -            invItems[i].Item1 = (SlotType)stream.ReadByte();
 -            invItems[i].Item2 = stream.ReadByte();
 +            // SlotType, SlotNum, Item
-+            var character = Connection.ActiveChar;
- 
--            equipItems[i].Item1 = (SlotType)stream.ReadByte();
--            equipItems[i].Item2 = stream.ReadByte();
 +            for (var i = 0; i < itemCount; i++)
 +            {
 +                var playerItem = new ItemAndLocation();
 +                var mateItem = new ItemAndLocation();
  
--            var isEquip = invItems[i].Item3.TemplateId != 0;
+-            equipItems[i].Item1 = (SlotType)stream.ReadByte();
+-            equipItems[i].Item2 = stream.ReadByte();
 +                playerItem.Item = new EquipItem();
 +                playerItem.Item.Read(stream);
  
--            invItems[i].Item3 = (EquipItem)character.Inventory.Bag.GetItemBySlot(invItems[i].Item2);
--            equipItems[i].Item3 = (EquipItem)mate.Equipment.GetItemBySlot(equipItems[i].Item2);
+-            var isEquip = invItems[i].Item3.TemplateId != 0;
 +                mateItem.Item = new EquipItem();
 +                mateItem.Item.Read(stream);
  
--            Logger.Debug($"FROM: ({invItems[i].Item1}:{invItems[i].Item2}) TO ({equipItems[i].Item1}:{equipItems[i].Item2}) ITEMS: {invItems[i].Item3?.Id}, {equipItems[i].Item3?.Id}, EQUIP: {isEquip}");
+-            invItems[i].Item3 = character.Inventory.Bag.GetItemBySlot(invItems[i].Item2);
+-            equipItems[i].Item3 = slave.Equipment.GetItemBySlot(equipItems[i].Item2);
 +                playerItem.SlotType = (SlotType)stream.ReadByte();
 +                playerItem.SlotNumber = stream.ReadByte();
+ 
+-            Logger.Debug($"FROM: ({invItems[i].Item1}:{invItems[i].Item2}) TO ({equipItems[i].Item1}:{equipItems[i].Item2}) ITEMS: {invItems[i].Item3?.Id}, {equipItems[i].Item3?.Id}, EQUIP: {isEquip}");
++                mateItem.SlotType = (SlotType)stream.ReadByte();
++                mateItem.SlotNumber = stream.ReadByte();
  
 -            if (isEquip)
 -            {
@@ -232,19 +323,17 @@ index fd3006f8f..bb82c0e0f 100644
 -                {
 -                    var itemTasks = new List<ItemTask>();
 -                    itemTasks.Add(new ItemRemove(invItems[i].Item3));
-+                mateItem.SlotType = (SlotType)stream.ReadByte();
-+                mateItem.SlotNumber = stream.ReadByte();
- 
--                    if (character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid, character.Inventory.Bag, mate.Equipment, invItems[i].Item3.Id, invItems[i].Item1, invItems[i].Item2, 0, equipItems[i].Item1, equipItems[i].Item2))
--                    {
--                        Connection.SendPacket(new SCMateEquipmentChangedPacket(invItems[i], equipItems[i], tl, characterId, passengerId, bts));
--                        Connection.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Destroy, itemTasks, new List<ulong>()));
--                    }
 +                var isEquip = playerItem.Item.TemplateId != 0;
-+
+ 
+-                    if (character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid, character.Inventory.Bag, slave.Equipment, invItems[i].Item3.Id, invItems[i].Item1, invItems[i].Item2, 0, equipItems[i].Item1, equipItems[i].Item2))
+-                    {
+-                        Connection.SendPacket(new SCSlaveEquipmentChangedPacket(invItems[i], equipItems[i], tl, characterId, slave.Id, bts));
+-                        Connection.SendPacket(new SCItemTaskSuccessPacket(ItemTaskType.Destroy, itemTasks, []));
+-                        //SlaveManager.Instance.Update(character, slave, invItems[i].Item3.TemplateId, invItems[i].Item3, isEquip);
+-                    }
 +                // Override the Read data with the actual Item data
 +                var sourceContainer = character.Inventory.Bag;
-+                var targetContainer = mate.Equipment;
++                var targetContainer = slave.Equipment;
 +                playerItem.Item = (EquipItem)sourceContainer.GetItemBySlot(playerItem.SlotNumber);
 +                mateItem.Item = (EquipItem)targetContainer.GetItemBySlot(mateItem.SlotNumber);
 +
@@ -265,7 +354,7 @@ index fd3006f8f..bb82c0e0f 100644
 +                //if (isEquip)
 +                if (playerItem.Item != null)
                  {
--                    if (character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid, mate.Equipment, character.Inventory.Bag, equipItems[i].Item3.Id, equipItems[i].Item1, equipItems[i].Item2, 0, invItems[i].Item1, invItems[i].Item2))
+-                    if (character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid, slave.Equipment, character.Inventory.Bag, equipItems[i].Item3.Id, equipItems[i].Item1, equipItems[i].Item2, 0, invItems[i].Item1, invItems[i].Item2))
 +                    var res = character.Inventory.SplitOrMoveItemEx(ItemTaskType.Invalid,
 +                        sourceContainer, targetContainer,
 +                        playerItem.Item.Id, playerItem.SlotType, playerItem.SlotNumber,
@@ -274,77 +363,153 @@ index fd3006f8f..bb82c0e0f 100644
 +                    // character.SendMessage($"SCMateEquipmentChanged - {(isEquip ? playerItem : mateItem)} -> {(isEquip ? mateItem : playerItem)}, MateTl: {mateTl} => Success {res}");
 +                    if (!res)
                      {
--                        Connection.SendPacket(new SCMateEquipmentChangedPacket(invItems[i], equipItems[i], tl, characterId, passengerId, bts));
+-                        Connection.SendPacket(new SCSlaveEquipmentChangedPacket(invItems[i], equipItems[i], tl, characterId, slave.Id, bts));
+-                        //SlaveManager.Instance.Update(character, slave, equipItems[i].Item3.TemplateId, equipItems[i].Item3, isEquip);
 +                        character.SendPacket(new SCMateEquipmentChangedPacket(
 +                            isEquip ? playerItem : mateItem,
 +                            isEquip ? mateItem : playerItem,
-+                            mateTl,
++                            slaveTl,
 +                            owningPlayerId, passengerPlayerId,
 +                            bts, res));
                      }
                  }
              }
-diff --git a/AAEmu.Game/Core/Packets/C2G/CSSwapItemsPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSSwapItemsPacket.cs
-index 0e6028098..44f4dc3f7 100644
---- a/AAEmu.Game/Core/Packets/C2G/CSSwapItemsPacket.cs
-+++ b/AAEmu.Game/Core/Packets/C2G/CSSwapItemsPacket.cs
-@@ -1,5 +1,6 @@
- ﻿using AAEmu.Commons.Network;
- using AAEmu.Game.Core.Network.Game;
-+using AAEmu.Game.Models.Game;
- using AAEmu.Game.Models.Game.Items;
- 
- namespace AAEmu.Game.Core.Packets.C2G;
-@@ -21,7 +22,8 @@ public override void Read(PacketStream stream)
-         var toSlotType = (SlotType)stream.ReadByte();  // type
-         var toSlot = stream.ReadByte();            // index
- 
--        Connection.ActiveChar.Inventory.SplitOrMoveItem(Models.Game.Items.Actions.ItemTaskType.SwapItems, fromItemId, fromSlotType, fromSlot, toItemId, toSlotType, toSlot);
-+        if (!Connection.ActiveChar.Inventory.SplitOrMoveItem(Models.Game.Items.Actions.ItemTaskType.SwapItems, fromItemId, fromSlotType, fromSlot, toItemId, toSlotType, toSlot))
-+            Connection.ActiveChar.SendErrorMessage(ErrorMessageType.InvalidSlot);
-         // Connection.ActiveChar.Inventory.Move(fromItemId, fromSlotType, fromSlot, toItemId, toSlotType, toSlot);
+         }
+-
+-        ////slaveEquipment = new SlaveEquipment();
+-        ////slaveEquipment.Read(stream);
+-
+-        //////var id = stream.ReadUInt32(); // type (id)
+-        //////var tl = stream.ReadUInt16();
+-        //////var dbSlaveId = stream.ReadUInt32();
+-        //////var bts = stream.ReadBoolean();
+-        //////var num = stream.ReadByte();
+-        //////for (var i = 0; i < num; i++)
+-        //////{
+-        //////    // read item1
+-        //////    var item1 = new Item();
+-        //////    item1.Read(stream);
+-
+-        //////    // read item2
+-        //////    var item2 = new Item();
+-        //////    item2.Read(stream);
+-
+-        //////    var slotType1 = (SlotType)stream.ReadByte();   // type
+-        //////    var slot1 = stream.ReadByte();            // index
+-
+-        //////    var slotType2 = (SlotType)stream.ReadByte();  // type
+-        //////    var slot2 = stream.ReadByte();           // index
+-        //////}
+-
+-        ////Logger.Debug($"ChangeSlaveEquipment, Id: {slaveEquipment.Id}, Tl: {slaveEquipment.Tl}, DbSlaveId: {slaveEquipment.DbSlaveId}, Bts: {slaveEquipment.Bts}");
+-
+-        ////var slave = SlaveManager.Instance.GetSlaveByOwnerObjId(Connection.ActiveChar.ObjId);
+-
+-        ////Connection.SendPacket(new SCSlaveEquipmentChangedPacket(slaveEquipment, true));
+-        ////Connection.ActiveChar.BroadcastPacket(new SCUnitEquipmentsChangedPacket(slave.ObjId, slaveEquipment.Slot, null), false);
      }
  }
 diff --git a/AAEmu.Game/Core/Packets/G2C/SCMateEquipmentChangedPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCMateEquipmentChangedPacket.cs
-index fd7f57b7f..f76a8dd80 100644
+index f76a8dd803..5344cd9b7e 100644
 --- a/AAEmu.Game/Core/Packets/G2C/SCMateEquipmentChangedPacket.cs
 +++ b/AAEmu.Game/Core/Packets/G2C/SCMateEquipmentChangedPacket.cs
-@@ -1,52 +1,55 @@
+@@ -1,6 +1,5 @@
  ﻿using AAEmu.Commons.Network;
  using AAEmu.Game.Core.Network.Game;
-+using AAEmu.Game.Core.Packets.C2G;
+-using AAEmu.Game.Core.Packets.C2G;
+ using AAEmu.Game.Models.Game.Items;
+ 
+ namespace AAEmu.Game.Core.Packets.G2C
+@@ -16,7 +15,8 @@ public class SCMateEquipmentChangedPacket : GamePacket
+         private readonly ItemAndLocation _itemOnPet;
+         private readonly ItemAndLocation _itemInBag;
+ 
+-        public SCMateEquipmentChangedPacket(ItemAndLocation itemOnPet, ItemAndLocation itemInBag, ushort mateTlId, uint characterId, uint passengerId, bool bts, bool success) : base(SCOffsets.SCMateEquipmentChangedPacket, 5)
++        public SCMateEquipmentChangedPacket(ItemAndLocation itemOnPet, ItemAndLocation itemInBag, ushort mateTlId, uint characterId, uint passengerId, bool bts, bool success)
++            : base(SCOffsets.SCMateEquipmentChangedPacket, 5)
+         {
+             _itemOnPet = itemOnPet;
+             _itemInBag = itemInBag;
+@@ -31,10 +31,10 @@ public SCMateEquipmentChangedPacket(ItemAndLocation itemOnPet, ItemAndLocation i
+         public override PacketStream Write(PacketStream stream)
+         {
+             stream.Write(_characterId); // type
+-            stream.Write(_mateTlId);        // tl
++            stream.Write(_mateTlId); // tl
+             stream.Write(_passengerId); // type
+-            stream.Write(_bts);         // bts
+-            stream.Write(_num);         // num
++            stream.Write(_bts); // bts
++            stream.Write(_num); // num
+ 
+             if (_itemOnPet.Item == null)
+                 stream.Write(0);
+@@ -51,8 +51,9 @@ public override PacketStream Write(PacketStream stream)
+             stream.Write((byte)_itemInBag.SlotType);
+             stream.Write(_itemInBag.SlotNumber);
+ 
+-        stream.Write(true); // success
++            stream.Write(_success); // success
+ 
+-        return stream;
++            return stream;
++        }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/AAEmu.Game/Core/Packets/G2C/SCSlaveEquipmentChangedPacket.cs b/AAEmu.Game/Core/Packets/G2C/SCSlaveEquipmentChangedPacket.cs
+index 5891f9189f..ae8bf4a5e4 100644
+--- a/AAEmu.Game/Core/Packets/G2C/SCSlaveEquipmentChangedPacket.cs
++++ b/AAEmu.Game/Core/Packets/G2C/SCSlaveEquipmentChangedPacket.cs
+@@ -1,68 +1,59 @@
+ ﻿using AAEmu.Commons.Network;
+ using AAEmu.Game.Core.Network.Game;
+-using AAEmu.Game.Models.Game;
  using AAEmu.Game.Models.Game.Items;
  
 -namespace AAEmu.Game.Core.Packets.G2C;
 -
--public class SCMateEquipmentChangedPacket : GamePacket
+-#pragma warning disable IDE0052 // Remove unread private members
+-
+-public class SCSlaveEquipmentChangedPacket : GamePacket
 +namespace AAEmu.Game.Core.Packets.G2C
  {
 -    private readonly ushort _tlId;
 -    private readonly uint _characterId;
--    private readonly uint _passengerId;
+-    private readonly uint _dbSlaveId;
 -    private readonly bool _bts;
 -    private readonly byte _num;
 -    private readonly (SlotType type, byte slot, Item item) _itemA;
 -    private readonly (SlotType type, byte slot, Item item) _itemB;
 -
--    public SCMateEquipmentChangedPacket((SlotType type, byte slot, Item item) itemA, (SlotType type, byte slot, Item item) itemB, ushort tlId, uint characterId, uint passengerId, bool bts) : base(SCOffsets.SCMateEquipmentChangedPacket, 5)
+-    private SlaveEquipment _slaveEquipment;
+-    private bool _success;
+-
+-    public SCSlaveEquipmentChangedPacket(SlaveEquipment slaveEquipment, bool success) : base(SCOffsets.SCSlaveEquipmentChangedPacket, 5)
++    public class SCSlaveEquipmentChangedPacket : GamePacket
+     {
+-        _slaveEquipment = slaveEquipment;
+-        _success = success;
+-    }
+-
+-    public SCSlaveEquipmentChangedPacket((SlotType type, byte slot, Item item) itemA, (SlotType type, byte slot, Item item) itemB, ushort tlId, uint characterId, uint dbSlaveId, bool bts)
+-        : base(SCOffsets.SCSlaveEquipmentChangedPacket, 5)
 -    {
 -        _itemA = itemA;
 -        _itemB = itemB;
 -        _tlId = tlId;
 -        _characterId = characterId;
--        _passengerId = passengerId;
+-        _dbSlaveId = dbSlaveId;
 -        _bts = bts;
 -        _num = 1; // all time == 1
 -    }
 -
 -    public override PacketStream Write(PacketStream stream)
-+    public class SCMateEquipmentChangedPacket : GamePacket
-     {
+-    {
 -        stream.Write(_characterId); // type
 -        stream.Write(_tlId);        // tl
--        stream.Write(_passengerId); // type
+-        stream.Write(_dbSlaveId);   // type
 -        stream.Write(_bts);         // bts
 -        stream.Write(_num);         // num
 -
@@ -362,20 +527,25 @@ index fd7f57b7f..f76a8dd80 100644
 -        stream.Write(_itemA.slot);
 -        stream.Write((byte)_itemB.type);
 -        stream.Write(_itemB.slot);
-+        private readonly ushort _mateTlId;
+-
+-        stream.Write(true); // success
+-
+-        return stream;
++        private readonly ushort _slaveTlId;
 +        private readonly uint _characterId;
 +        private readonly uint _passengerId;
 +        private readonly bool _bts;
 +        private readonly byte _num;
 +        private readonly bool _success;
-+        private readonly ItemAndLocation _itemOnPet;
++        private readonly ItemAndLocation _itemOnSlave;
 +        private readonly ItemAndLocation _itemInBag;
 +
-+        public SCMateEquipmentChangedPacket(ItemAndLocation itemOnPet, ItemAndLocation itemInBag, ushort mateTlId, uint characterId, uint passengerId, bool bts, bool success) : base(SCOffsets.SCMateEquipmentChangedPacket, 5)
++        public SCSlaveEquipmentChangedPacket(ItemAndLocation itemOnSlave, ItemAndLocation itemInBag, ushort slaveTlId, uint characterId, uint passengerId, bool bts, bool success)
++            : base(SCOffsets.SCSlaveEquipmentChangedPacket, 5)
 +        {
-+            _itemOnPet = itemOnPet;
++            _itemOnSlave = itemOnSlave;
 +            _itemInBag = itemInBag;
-+            _mateTlId = mateTlId;
++            _slaveTlId = slaveTlId;
 +            _characterId = characterId;
 +            _passengerId = passengerId;
 +            _bts = bts;
@@ -386,1175 +556,181 @@ index fd7f57b7f..f76a8dd80 100644
 +        public override PacketStream Write(PacketStream stream)
 +        {
 +            stream.Write(_characterId); // type
-+            stream.Write(_mateTlId);        // tl
++            stream.Write(_slaveTlId); // tl
 +            stream.Write(_passengerId); // type
-+            stream.Write(_bts);         // bts
-+            stream.Write(_num);         // num
++            stream.Write(_bts); // bts
++            stream.Write(_num); // num
 +
-+            if (_itemOnPet.Item == null)
++            if (_itemOnSlave.Item == null)
 +                stream.Write(0);
 +            else
-+                stream.Write(_itemOnPet.Item);
++                stream.Write(_itemOnSlave.Item);
 +
 +            if (_itemInBag.Item == null)
 +                stream.Write(0);
 +            else
 +                stream.Write(_itemInBag.Item);
 +
-+            stream.Write((byte)_itemOnPet.SlotType);
-+            stream.Write(_itemOnPet.SlotNumber);
++            stream.Write((byte)_itemOnSlave.SlotType);
++            stream.Write(_itemOnSlave.SlotNumber);
 +            stream.Write((byte)_itemInBag.SlotType);
 +            stream.Write(_itemInBag.SlotNumber);
- 
-         stream.Write(true); // success
- 
-diff --git a/AAEmu.Game/Models/Game/Char/Character.cs b/AAEmu.Game/Models/Game/Char/Character.cs
-index 9df9ffb3b..091099bdf 100644
---- a/AAEmu.Game/Models/Game/Char/Character.cs
-+++ b/AAEmu.Game/Models/Game/Char/Character.cs
-@@ -1278,33 +1278,6 @@ public Character(UnitCustomModelParams modelParams)
-         //Events.OnCombatStarted += OnEnterCombat;
++
++            stream.Write(_success); // success
++
++            return stream;
++        }
      }
- 
--    public WeaponWieldKind GetWeaponWieldKind()
--    {
--        var item = Inventory.Equipment.GetItemBySlot((int)EquipmentItemSlot.Mainhand);
--        if (item != null && item.Template is WeaponTemplate weapon)
--        {
--            var slotId = (EquipmentItemSlotType)weapon.HoldableTemplate.SlotTypeId;
--            if (slotId == EquipmentItemSlotType.TwoHanded)
--                return WeaponWieldKind.TwoHanded;
--            else if (slotId == EquipmentItemSlotType.OneHanded || slotId == EquipmentItemSlotType.Mainhand)
--            {
--                var item2 = Inventory.Equipment.GetItemBySlot((int)EquipmentItemSlot.Offhand);
--                if (item2 != null && item2.Template is WeaponTemplate weapon2)
--                {
--                    var slotId2 = (EquipmentItemSlotType)weapon2.HoldableTemplate.SlotTypeId;
--                    if (slotId2 == EquipmentItemSlotType.OneHanded || slotId2 == EquipmentItemSlotType.Offhand)
--                        return WeaponWieldKind.DuelWielded;
--                    else
--                        return WeaponWieldKind.OneHanded;
--                }
--                else
--                    return WeaponWieldKind.OneHanded;
--            }
--        }
--
--        return WeaponWieldKind.None;
--    }
--
-     public void SetHostileActivity(Character attacker)
-     {
-         if (_hostilePlayers.ContainsKey(attacker.ObjId))
-@@ -2305,7 +2278,7 @@ public void Load()
-     {
-         var template = CharacterManager.Instance.GetTemplate(Race, Gender);
-         ModelId = template.ModelId;
--        BuyBackItems = new ItemContainer(Id, SlotType.None, false);
-+        BuyBackItems = new ItemContainer(Id, SlotType.None, false, this);
-         Slots = new ActionSlot[MaxActionSlots];
-         for (var i = 0; i < Slots.Length; i++)
-             Slots[i] = new ActionSlot();
-diff --git a/AAEmu.Game/Models/Game/Char/CharacterEquipment.cs b/AAEmu.Game/Models/Game/Char/CharacterEquipment.cs
-deleted file mode 100644
-index 873681fc7..000000000
---- a/AAEmu.Game/Models/Game/Char/CharacterEquipment.cs
-+++ /dev/null
-@@ -1,385 +0,0 @@
--﻿using System;
--using System.Collections.Generic;
--using System.Linq;
--using AAEmu.Game.Core.Managers;
--using AAEmu.Game.GameData;
--using AAEmu.Game.Models.Game.Items;
--using AAEmu.Game.Models.Game.Items.Templates;
--using AAEmu.Game.Models.Game.Skills;
--using AAEmu.Game.Models.Game.Skills.Templates;
--
--namespace AAEmu.Game.Models.Game.Char;
--
--public partial class Character
--{
--    public void UpdateGearBonuses(Item itemAdded, Item itemRemoved)
--    {
--        // We use index 1 for gear bonuses. Will make this a constant later, or do it properly. Right now the expected behavior is to have key == buff id, which doesn't work when you have items.
--        Bonuses[1] = new List<Bonus>();
--
--        foreach (var item in Equipment.Items)
--        {
--            if (!(item is EquipItem ei))
--                continue;
--
--            // Gems
--            foreach (var gem in ei.GemIds)
--                foreach (var template in ItemManager.Instance.GetUnitModifiers(gem))
--                    AddBonus(1, new Bonus { Template = template, Value = template.Value });
--        }
--
--        // Apply Equip Effects
--        ApplyEquipEffects(itemAdded, itemRemoved);
--
--        // Compute gear buff
--        ApplyWeaponWieldBuff();
--        ApplyArmorGradeBuff(itemAdded, itemRemoved);
--        ApplyEquipItemSetBonuses();
--    }
--
--    private void ApplyWeaponWieldBuff()
--    {
--        Buffs.RemoveBuff((uint)BuffConstants.EquipDualwield);
--        Buffs.RemoveBuff((uint)BuffConstants.EquipShield);
--        Buffs.RemoveBuff((uint)BuffConstants.EquipTwoHanded);
--
--        BuffTemplate buffTemplate = null;
--        switch (GetWeaponWieldKind())
--        {
--            case WeaponWieldKind.None:
--            case WeaponWieldKind.OneHanded:
--                var item = Inventory.Equipment.GetItemBySlot((int)EquipmentItemSlot.Offhand);
--                if (item != null && item.Template is WeaponTemplate weapon)
--                {
--                    var slotId = (EquipmentItemSlotType)weapon.HoldableTemplate.SlotTypeId;
--                    if (slotId == EquipmentItemSlotType.Shield)
--                        buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipShield);
--                }
--                break;
--            case WeaponWieldKind.TwoHanded:
--                buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipTwoHanded);
--                break;
--            case WeaponWieldKind.DuelWielded:
--                buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipDualwield);
--                break;
--        }
--
--        if (buffTemplate != null)
--        {
--            var effect = new Buff(this, this, new SkillCasterUnit(ObjId), buffTemplate, null, DateTime.UtcNow);
--            Buffs.AddBuff(effect);
--        }
--    }
--
--    private void ApplyEquipItemSetBonuses()
--    {
--        var setNumPieces = new Dictionary<uint, int>();
--        var itemLevels = new Dictionary<uint, uint>();
--        foreach (var item in Equipment.Items)
--        {
--            if (item.Template is EquipItemTemplate template)
--            {
--                var equipItemSetId = template.EquipItemSetId;
--                if (template.EquipItemSetId == 0)
--                    continue;
--
--                if (!setNumPieces.ContainsKey(equipItemSetId))
--                {
--                    setNumPieces.Add(equipItemSetId, (1));
--                    itemLevels.Add(equipItemSetId, (uint)item.Template.Level);
--                }
--                else
--                {
--                    setNumPieces[equipItemSetId]++;
--                    if (item.Template.Level < itemLevels[equipItemSetId])
--                        itemLevels[equipItemSetId] = (uint)item.Template.Level;
--                }
--            }
--        }
--
--        var appliedBuffs = new HashSet<uint>();
--        foreach (var setCount in setNumPieces)
--        {
--            var equipItemSet = ItemManager.Instance.GetEquippedItemSet(setCount.Key);
--            foreach (var bonus in equipItemSet.Bonuses)
--            {
--                if (setCount.Value >= bonus.NumPieces)
--                {
--                    if (bonus.BuffId != 0)
--                    {
--                        if (Buffs.CheckBuff(bonus.BuffId))
--                        {
--                            appliedBuffs.Add(bonus.BuffId);
--                            continue;
--                        }
--                        var buffTemplate = SkillManager.Instance.GetBuffTemplate(bonus.BuffId);
--
--                        var newEffect =
--                            new Buff(this, this, new SkillCasterUnit(ObjId), buffTemplate, null, DateTime.UtcNow)
--                            {
--                                AbLevel = (ushort)itemLevels[setCount.Key]
--                            };
--                        Buffs.AddBuff(newEffect);
--                        appliedBuffs.Add(bonus.BuffId);
--                    }
--                    if (bonus.ItemProcId != 0)
--                    {
--                        Procs.AddProc(bonus.ItemProcId);
--                    }
--                }
--                else //This needs to be revised? Will we ever remove more than 1 item at a time?
--                {
--                    if (bonus.BuffId != 0 && Buffs.CheckBuff(bonus.BuffId) && !appliedBuffs.Contains(bonus.BuffId))
--                        Buffs.RemoveBuff(bonus.BuffId);
--                    if (bonus.ItemProcId != 0)
--                        Procs.RemoveProc(bonus.ItemProcId);
--                }
--            }
--        }
--    }
--
--    private void ApplyArmorGradeBuff(Item itemAdded, Item itemRemoved)
--    {
--        if ((itemAdded != null || itemRemoved != null) && (!(itemAdded is Armor) && !(itemRemoved is Armor)))
--            return;
--
--        // Clear any existing armor grade buffs
--        Buffs.RemoveBuffs((uint)BuffConstants.ArmorBuffTag, 10);
--
--        // Get armor pieces by kind
--        var armorPieces = new Dictionary<ArmorType, List<Armor>>();
--        foreach (var item in Equipment.Items)
--        {
--            if (!(item is Armor armor))
--                continue;
--
--            if (!(item.Template is ArmorTemplate armorTemplate))
--                continue;
--
--            if (armorTemplate.SlotTemplate.SlotTypeId == (ulong)EquipmentItemSlotType.Back)
--                continue;
--
--            if (!armorPieces.ContainsKey((ArmorType)armorTemplate.KindTemplate.TypeId))
--                armorPieces.Add((ArmorType)armorTemplate.KindTemplate.TypeId, new List<Armor>());
--            armorPieces[(ArmorType)armorTemplate.KindTemplate.TypeId].Add(armor);
--        }
--
--        if (armorPieces.Count == 0)
--            return;
--        // Get kind with most pieces
--        var piecesOfKind = armorPieces.First();
--        foreach (var piecesByKind in armorPieces)
--        {
--            if (piecesByKind.Value.Count > piecesOfKind.Value.Count) piecesOfKind = piecesByKind;
--        }
--
--        var piecesToAccountForBuff = piecesOfKind.Value;
--
--        if (piecesToAccountForBuff.Count < 4)
--            return;
--
--        var finalArmorTemplate = piecesToAccountForBuff.First().Template as ArmorTemplate;
--        if (finalArmorTemplate == null)
--            return;
--
--        if (piecesToAccountForBuff.Count == 7)
--        {
--            BuffTemplate templ = null;
--            switch ((ArmorType)finalArmorTemplate.WearableTemplate.TypeId)
--            {
--                case ArmorType.Cloth:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Cloth7P);
--                    break;
--                case ArmorType.Leather:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Leather7P);
--                    break;
--                case ArmorType.Metal:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Plate7P);
--                    break;
--            }
--
--            if (templ != null)
--                Buffs.AddBuff(new Buff(this, this, new SkillCasterUnit(), templ, null, DateTime.UtcNow));
--        }
--        else
--        {
--            BuffTemplate templ = null;
--            switch ((ArmorType)finalArmorTemplate.WearableTemplate.TypeId)
--            {
--                case ArmorType.Cloth:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Cloth4P);
--                    break;
--                case ArmorType.Leather:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Leather4P);
--                    break;
--                case ArmorType.Metal:
--                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Plate4P);
--                    break;
--            }
--
--            if (templ != null)
--                Buffs.AddBuff(new Buff(this, this, new SkillCasterUnit(), templ, null, DateTime.UtcNow));
--        }
--
--        // Get only pieces >= arcane
--        var piecesAboveArcane = piecesToAccountForBuff.Where(p => p.Grade >= (int)ItemGrade.Arcane).ToList();
--        if (piecesAboveArcane.Count < 4)
--            return;
--
--        var totalLevel = piecesAboveArcane.Sum(a => a.Template.Level);
--
--        // This const was calculated by hand, it might make no sense.
--        var abLevel = totalLevel * 0.40670554f;
--        var gradeBuffAbLevel = (abLevel * abLevel) / 15 + 30;
--        var lowestGrade = piecesAboveArcane.Min(a => a.Grade);
--
--        // Apply buff 
--        if (piecesAboveArcane.First().Template is ArmorTemplate armorTemp)
--        {
--            var type = armorTemp.WearableTemplate.TypeId;
--            var armorGradeBuff =
--                ItemManager.Instance.GetArmorGradeBuff((ArmorType)type, (ItemGrade)lowestGrade);
--            var buffTemplate = SkillManager.Instance.GetBuffTemplate(armorGradeBuff.BuffId);
--
--            var newEffect =
--                new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
--                {
--                    AbLevel = (ushort)gradeBuffAbLevel
--                };
--
--            Buffs.AddBuff(newEffect);
--        }
--    }
--
--    private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
--    {
--        if (itemRemoved != null)
--        {
--            // Static Item Buffs
--            var itemRemovedBuff = ItemGameData.Instance.GetItemBuff(itemRemoved.TemplateId, itemRemoved.Grade);
--            if (itemRemovedBuff == null)
--                itemRemovedBuff = SkillManager.Instance.GetBuffTemplate(itemRemoved.Template?.BuffId ?? 0);
--            if (itemRemovedBuff != null) // remove previous buff
--            {
--                if (Buffs.CheckBuff(itemRemovedBuff.Id))
--                {
--                    Buffs.RemoveBuff(itemRemovedBuff.Id);
--                }
--            }
--
--            // Charged Item Buffs
--            if ((itemRemoved.Template is EquipItemTemplate equipItemTemplate) &&
--                (equipItemTemplate.RechargeBuffId > 0) &&
--                Buffs.CheckBuff(equipItemTemplate.RechargeBuffId))
--                Buffs.RemoveBuff(equipItemTemplate.RechargeBuffId);
--        }
--
--        if (itemAdded != null)
--        {
--            // Static Buffs
--            var itemAddedBuff = ItemGameData.Instance.GetItemBuff(itemAdded.TemplateId, itemAdded.Grade);
--            if (itemAddedBuff == null)
--                itemAddedBuff = SkillManager.Instance.GetBuffTemplate(itemAdded.Template.BuffId);
--            if (itemAddedBuff != null) // add buff from equipped item
--            {
--                var newEffect =
--                    new Buff(this, this, new SkillCasterUnit(), itemAddedBuff, null, DateTime.UtcNow)
--                    {
--                        AbLevel = (ushort)itemAdded.Template.Level
--                    };
--
--                Buffs.AddBuff(newEffect);
--            }
--
--            // Charged Item Buffs
--            if ((itemAdded is EquipItem equipItem) && (equipItem.Template is EquipItemTemplate equipItemTemplate) &&
--                (equipItemTemplate.RechargeBuffId > 0))
--            {
--                var addChargeBuff = false;
--                var checkExpireTime = equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack)
--                    ? equipItem.UnpackTime
--                    : equipItem.ChargeStartTime;
--                checkExpireTime = checkExpireTime.AddMinutes(equipItemTemplate.ChargeLifetime);
--
--                // Check against timer
--                if ((equipItemTemplate.ChargeLifetime > 0) && (checkExpireTime > DateTime.UtcNow))
--                    addChargeBuff = true;
--
--                // Check against charge counter
--                if ((equipItemTemplate.ChargeCount > 0) && (equipItem.ChargeCount > 0))
--                    addChargeBuff = true;
--
--                // If this item is Bind on unwrap, don't start the buff if it's not unwrapped
--                if (equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) && (equipItem.HasFlag(ItemFlag.Unpacked) == false))
--                    addChargeBuff = false;
--
--                if (addChargeBuff)
--                {
--                    var itemAddedChargedBuff = SkillManager.Instance.GetBuffTemplate(equipItemTemplate.RechargeBuffId);
--                    var newEffect =
--                        new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
--                        {
--                            AbLevel = (ushort)itemAdded.Template.Level
--                        };
--                    Buffs.AddBuff(newEffect);
--                }
--            }
--        }
--
--        if (itemAdded == null && itemRemoved == null) // This is the first load check to apply buffs for equipped items. 
--        {
--            Buffs.RemoveBuffs((uint)BuffConstants.EquipmentBuffTag, 20);
--            foreach (var item in Equipment.Items)
--            {
--                // Static Buffs
--                if (item.Template.BuffId != 0)
--                {
--                    var buffTemplate = ItemGameData.Instance.GetItemBuff(item?.TemplateId ?? 0, item?.Grade ?? 0);
--                    if (buffTemplate == null)
--                        buffTemplate = SkillManager.Instance.GetBuffTemplate(item?.Template.BuffId ?? 0);
--                    var newEffect =
--                        new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
--                        {
--                            AbLevel = (ushort)item.Template.Level
--                        };
--
--                    Buffs.AddBuff(newEffect);
--                }
--
--                // Charged Item Buffs
--                if ((item is EquipItem equipItem) && (equipItem.Template is EquipItemTemplate equipItemTemplate) &&
--                    (equipItemTemplate.RechargeBuffId > 0))
--                {
--                    var addChargeBuff = false;
--                    var checkExpireTime = equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack)
--                        ? equipItem.UnpackTime
--                        : equipItem.ChargeStartTime;
--                    checkExpireTime = checkExpireTime.AddMinutes(equipItemTemplate.ChargeLifetime);
--
--                    // Check against timer
--                    if ((equipItemTemplate.ChargeLifetime > 0) && (checkExpireTime > DateTime.UtcNow))
--                        addChargeBuff = true;
--
--                    // Check against charge counter
--                    if ((equipItemTemplate.ChargeCount > 0) && (equipItem.ChargeCount > 0))
--                        addChargeBuff = true;
--
--                    // If this item is Bind on unwrap, don't start the buff if it's not unwrapped
--                    if (equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) && (equipItem.HasFlag(ItemFlag.Unpacked) == false))
--                        addChargeBuff = false;
--
--                    if (addChargeBuff)
--                    {
--                        var itemAddedChargedBuff = SkillManager.Instance.GetBuffTemplate(equipItemTemplate.RechargeBuffId);
--                        var newEffect =
--                            new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
--                            {
--                                AbLevel = (ushort)item.Template.Level
--                            };
--                        Buffs.AddBuff(newEffect);
--                    }
--                }
--            }
--        }
--    }
--}
-diff --git a/AAEmu.Game/Models/Game/Char/CharacterMates.cs b/AAEmu.Game/Models/Game/Char/CharacterMates.cs
-index ef5ec2e00..146c9bc2e 100644
---- a/AAEmu.Game/Models/Game/Char/CharacterMates.cs
-+++ b/AAEmu.Game/Models/Game/Char/CharacterMates.cs
-@@ -134,8 +134,8 @@ public void SpawnMount(SkillItem skillData)
-             buff.Apply(mount, obj, mount, null, null, new EffectSource(), null, DateTime.UtcNow);
-         }
- 
--        // TODO: Load Pet Gear
--        mount.Equipment = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, SlotType.EquipmentMate, mount.Id);
-+        mount.Equipment = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, SlotType.EquipmentMate, mount, mount.Id);
-+        mount.UpdateGearBonuses(null, null);
- 
-         // Cap stats to their max
-         mount.Hp = Math.Min(mount.Hp, mount.MaxHp);
-diff --git a/AAEmu.Game/Models/Game/Char/ICharacter.cs b/AAEmu.Game/Models/Game/Char/ICharacter.cs
-index d91984833..5b3a86acd 100644
---- a/AAEmu.Game/Models/Game/Char/ICharacter.cs
-+++ b/AAEmu.Game/Models/Game/Char/ICharacter.cs
-@@ -29,8 +29,6 @@ public interface ICharacter : IUnit
-     void SendErrorMessage(ErrorMessageType errorMsgType, uint type = 0, bool isNotify = true);
-     void ChangeLabor(short change, int actabilityId);
-     void AddExp(int exp, bool shouldAddAbilityExp);
--    void UpdateGearBonuses(Item itemAdded, Item itemRemoved);
--    public bool ChangeMoney(SlotType moneylocation, int amount, ItemTaskType itemTaskType = ItemTaskType.DepositMoney) => ChangeMoney(SlotType.None, moneylocation, amount, itemTaskType);
-     public bool ChangeMoney(SlotType typeFrom, SlotType typeTo, int amount, ItemTaskType itemTaskType = ItemTaskType.DepositMoney);
-     public void ChangeGamePoints(GamePointKind kind, int change);
-     public void SetGrowthRate(float value);
+ }
 diff --git a/AAEmu.Game/Models/Game/Char/Inventory.cs b/AAEmu.Game/Models/Game/Char/Inventory.cs
-index 5a205e8d9..9024adbcd 100644
+index 9024adbcdb..94fbc13e6d 100644
 --- a/AAEmu.Game/Models/Game/Char/Inventory.cs
 +++ b/AAEmu.Game/Models/Game/Char/Inventory.cs
-@@ -5,15 +5,14 @@
+@@ -5,14 +5,15 @@
  using AAEmu.Commons.Network;
  using AAEmu.Game.Core.Managers;
  using AAEmu.Game.Core.Managers.UnitManagers;
-+using AAEmu.Game.Core.Packets.C2G;
+-using AAEmu.Game.Core.Packets.C2G;
  using AAEmu.Game.Core.Packets.G2C;
  using AAEmu.Game.Models.Game.Housing;
  using AAEmu.Game.Models.Game.Items;
  using AAEmu.Game.Models.Game.Items.Actions;
  using AAEmu.Game.Models.Game.Items.Containers;
  using AAEmu.Game.Models.Game.Items.Templates;
--using AAEmu.Game.Models.Game.NPChar;
++using AAEmu.Game.Models.Game.NPChar;
  using AAEmu.Game.Models.Game.Units;
--
++
  using MySql.Data.MySqlClient;
  
  using NLog;
-@@ -40,7 +39,7 @@ public Inventory(ICharacter owner)
-         _itemContainers = new Dictionary<SlotType, ItemContainer>();
- 
-         // Override Unit's created equipment container with a persistent one
--        Owner.Equipment = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, SlotType.Equipment);
-+        Owner.Equipment = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, SlotType.Equipment, (Character)owner, 0);
- 
-         var slotTypes = Enum.GetValues(typeof(SlotType));
-         foreach (var stv in slotTypes)
-@@ -60,7 +59,7 @@ public Inventory(ICharacter owner)
-             }
- 
-             //var newContainer = new ItemContainer(owner.Id, st, true, false);
--            var newContainer = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, st);
-+            var newContainer = ItemManager.Instance.GetItemContainerForCharacter(Owner.Id, st, (Character)owner, 0);
-             newContainer.Owner = Owner; // override to be sure the object reference is set correctly
-             _itemContainers.Add(st, newContainer);
-             switch (st)
-@@ -265,7 +264,7 @@ private enum SwapAction
-     }
- 
-     /// <summary>
--    /// All purpose function to move items from one slot to another
-+    /// All-purpose function to move items from one slot to another
-     /// </summary>
-     /// <param name="taskType">Task type to report to the player</param>
-     /// <param name="fromItemId">Source Item TemplateId</param>
-@@ -285,20 +284,25 @@ public bool SplitOrMoveItem(ItemTaskType taskType, ulong fromItemId, SlotType fr
-             return false;
-         }
- 
--        // Grab target container for easy manipulation
--        var sourceContainer = fromItem?._holdingContainer ?? Bag;
--        if (!_itemContainers.TryGetValue(toType, out var targetContainer))
-+        var toItem = ItemManager.Instance.GetItemByItemId(toItemId);
-+        if (toItem == null && toItemId != 0)
-         {
--            targetContainer = Bag;
-+            Logger.Error($"SplitOrMoveItem - ItemId {toItemId} no longer exists, possibly a phantom item.");
-+            return false;
-         }
- 
-+        // Grab containers for easy manipulation
-+        var sourceContainer = fromItem?._holdingContainer ?? _itemContainers.GetValueOrDefault(fromType);
-+        var targetContainer = toItem?._holdingContainer ?? _itemContainers.GetValueOrDefault(toType);
-+
-         return SplitOrMoveItemEx(taskType, sourceContainer, targetContainer, fromItemId, fromType, fromSlot, toItemId, toType, toSlot, count);
-     }
- 
-     public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContainer, ItemContainer targetContainer, ulong fromItemId, SlotType fromType, byte fromSlot, ulong toItemId, SlotType toType, byte toSlot, int count = 0)
-     {
--        var info = $"SplitOrMoveItem({fromItemId} {fromType}:{fromSlot} => {toItemId} {toType}:{toSlot} - {count})";
--        Logger.Trace(info);
-+        Logger.Trace($"SplitOrMoveItem({fromItemId} {fromType}:{fromSlot} => {toItemId} {toType}:{toSlot} - {count})");
-+
-+        // Try to grab the actual source item
-         var fromItem = ItemManager.Instance.GetItemByItemId(fromItemId);
-         if (fromItem == null && fromItemId != 0)
-         {
-@@ -306,71 +310,68 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-             return false;
-         }
- 
--        var itemInTargetSlot = ItemManager.Instance.GetItemByItemId(toItemId);
-         var action = SwapAction.doNothing;
-+
-+        // Try to grab the target item by it's itemId
-+        var itemInTargetSlot = ItemManager.Instance.GetItemByItemId(toItemId);
-+        // If no count provided, and we have a source item, use that item's total count instead
-         if (count <= 0 && fromItem != null)
-             count = fromItem.Count;
- 
--        // Grab target container for easy manipulation
--        /*
--        var sourceContainer = fromItem?._holdingContainer ?? Bag;
--        if (_itemContainers.TryGetValue(toType, out var targetContainer))
--        {
--            itemInTargetSlot = targetContainer.GetItemBySlot(toSlot);
--        }
--        else
--        {
--            targetContainer = Bag;
--        }
--        */
--
-+        // If target item is not provided (itemId was not found), grab the item in the target slot instead
-         if (itemInTargetSlot == null)
-             itemInTargetSlot = targetContainer.GetItemBySlot(toSlot);
- 
-         // Check if containers can accept the items
-         if (targetContainer is not null && !targetContainer.CanAccept(fromItem, toSlot))
-         {
--            Logger.Error($"SplitOrMoveItem - fromItemId {fromItemId} is not welcome in this container {targetContainer.ContainerType}.");
-+            Logger.Error($"SplitOrMoveItem - fromItemId {fromItemId} is not welcome in this container {targetContainer.ContainerType} ({targetContainer.ContainerId}).");
-             return false;
-         }
-         if (sourceContainer is not null && !sourceContainer.CanAccept(itemInTargetSlot, fromSlot))
-         {
--            Logger.Error($"SplitOrMoveItem - toItemId {toItemId} is not welcome in this container {sourceContainer.ContainerType}.");
-+            Logger.Error($"SplitOrMoveItem - toItemId {toItemId} is not welcome in this container {sourceContainer.ContainerType} ({sourceContainer.ContainerId}).");
-             return false;
-         }
- 
--        // Are we equipping into a empty slot ? For whatever reason the client will send FROM empty equipment slot => TO item to equip
-+        // Are we equipping into an empty slot ? For whatever reason the client will send FROM empty equipment slot => TO item to equip
-         if (fromItemId == 0 && fromType == SlotType.Equipment && toType != SlotType.Equipment && itemInTargetSlot != null)
-         {
-             action = SwapAction.doEquipInEmptySlot;
--            sourceContainer = Equipment;
-+            // sourceContainer = Equipment;
-         }
- 
-+        // Are we equipping it into an empty mount gear slot?
-         if (fromItemId == 0 && fromType == SlotType.EquipmentMate && toType != SlotType.EquipmentMate && itemInTargetSlot != null)
-         {
-             action = SwapAction.doEquipInEmptySlot;
--            sourceContainer = Equipment;
-+            // In case of MateEquipment the source container is always sent as the pet's container,
-+            // and targetContainer is always the player inventory. It does not need to be overriden.
-+            // sourceContainer = Equipment;
-         }
- 
--        // Check some conditions when we are not equipping into a empty slot
-+        // Check some conditions when we are not equipping into an empty slot
-         if (action != SwapAction.doEquipInEmptySlot && fromItem == null)
-         {
-             Logger.Error("SplitOrMoveItem didn't provide a source itemId");
-             return false;
-         }
- 
-+        // Check if what the client provides as its source container is actually what the server has as data for the item
-         if (action != SwapAction.doEquipInEmptySlot && sourceContainer?.ContainerType != fromType)
-         {
-             Logger.Error("SplitOrMoveItem Source Item Container did not match what the client asked");
-             return false;
-         }
- 
-+        // Check if what the client provides as its source slot number is actually what the server has as data for the item
-         if (action != SwapAction.doEquipInEmptySlot && fromItem?.Slot != fromSlot)
-         {
-             Logger.Error("SplitOrMoveItem Source Item slot did not match what the client asked");
-             return false;
-         }
- 
-+        // Check if the amount we want to move is actually available from source
-         if (action != SwapAction.doEquipInEmptySlot && count > fromItem?.Count)
-         {
-             Logger.Error("SplitOrMoveItem Source Item has less item count than is requested to be moved");
-@@ -380,19 +381,22 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-         // Validate target Item stuff
-         if (itemInTargetSlot != null)
-         {
-+            // Check if target slot type is what the server has on data
-             if (itemInTargetSlot.SlotType != toType)
-             {
-                 Logger.Error("SplitOrMoveItem Target Item Type does not match");
-                 return false;
-             }
- 
-+            // Check if target slot number is what the server has on data
-             if (itemInTargetSlot.Slot != toSlot)
-             {
-                 Logger.Error("SplitOrMoveItem Target Item Slot does not match");
-                 return false;
-             }
- 
--            if (action != SwapAction.doEquipInEmptySlot && itemInTargetSlot.TemplateId == fromItem.TemplateId && itemInTargetSlot.Count + count > fromItem.Template.MaxCount && fromItem.Template.MaxCount > 1)
-+            // Check if target slot has enough room left for this item
-+            if (action != SwapAction.doEquipInEmptySlot && itemInTargetSlot.TemplateId == fromItem?.TemplateId && itemInTargetSlot.Count + count > fromItem.Template.MaxCount && fromItem.Template.MaxCount > 1)
-             {
-                 Logger.Error("SplitOrMoveItem Target Item stack does not have enough room to take source");
-                 return false;
-@@ -417,12 +421,14 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-         Item mainHandWeapon = null;
-         Item offHandWeapon = null;
- 
-+        // If swapping items or equipping new items
-         if (action == SwapAction.doSwap || action == SwapAction.doEquipInEmptySlot)
-         {
-+            // Grab reference to old weapon slots
-             mainHandWeapon = Equipment.GetItemBySlot((int)EquipmentItemSlot.Mainhand);
-             offHandWeapon = Equipment.GetItemBySlot((int)EquipmentItemSlot.Offhand);
-+
-             // Check for equipping weapons by swapping (and if it's a 2-handed one)
--            //var isFromNon2HWeapon = false;
-             var isFrom2H = false;
-             if (fromItem != null && fromItem.Template is WeaponTemplate weaponFrom)
-             {
-@@ -442,7 +448,6 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 }
-             }
- 
--            //var isToNon2HWeapon = false;
-             var isTo2H = false;
-             if (itemInTargetSlot != null && itemInTargetSlot.Template is WeaponTemplate weaponTo)
-             {
-@@ -470,35 +475,37 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                     case EquipmentItemSlotType.TwoHanded:
-                         isMain2H = true;
-                         break;
--                    /*
-                     case EquipmentItemSlotType.Mainhand:
-                     case EquipmentItemSlotType.Offhand:
-                     case EquipmentItemSlotType.Shield:
-                     case EquipmentItemSlotType.OneHanded:
--                        isFromNon2HWeapon = true;
-+                        // isFromNon2HWeapon = true;
-                         break;
--                    */
-                     default:
-                         break;
-                 }
-             }
- 
-+            // If equipping a 2-Handed weapon, and we had an off-hand slot weapon equipped, mark it for un-equip 
-             if (isTo2H && sourceContainer?.ContainerType == SlotType.Equipment && fromSlot == (int)EquipmentItemSlot.Mainhand)
-                 doUnEquipOffhand = true;
-+
-+            // If equipping a 2-Handed weapon, and we had a main slot weapon equipped, mark it for un-equip
-             if (isMain2H && sourceContainer?.ContainerType == SlotType.Equipment && fromSlot == (int)EquipmentItemSlot.Offhand)
-                 doUnEquipMainHand = true;
- 
-             // Client actually always sends from equipment => inventory no matter how you click it, this is just a safety if it ever changes
-+            // Same checks as above, but in reverse order
-             if (isFrom2H && targetContainer?.ContainerType == SlotType.Equipment && toSlot == (int)EquipmentItemSlot.Mainhand)
-                 doUnEquipOffhand = true;
-             if (isMain2H && targetContainer?.ContainerType == SlotType.Equipment && toSlot == (int)EquipmentItemSlot.Offhand)
-                 doUnEquipMainHand = true;
-         }
- 
-+        // If we need to un-equip the off-hand weapon because of equipping a 2-handed weapon 
-         if (doUnEquipOffhand && offHandWeapon != null)
-         {
--            //Logger.Trace("SplitOrMoveItem - UnEquip OffHand required!");
--            // Check if we have enough space to unequip the offhand
-+            // Check if we have enough space to un-equip the offhand
-             if (Bag.FreeSlotCount < 1)
-                 return false;
-             // If we can't move it to bag for whatever reason, abort
-@@ -506,10 +513,10 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 return false;
-         }
- 
-+        // If we need to un-equip the main-hand weapon because of equipping a 2-handed weapon
-         if (doUnEquipMainHand)
-         {
--            //Logger.Trace("SplitOrMoveItem - UnEquip MainHand required!");
--            // Check if we have enough space to unequip the mainhand
-+            // Check if we have enough space to un-equip the main hand weapon
-             if (Bag.FreeSlotCount < 1)
-                 return false;
-             // If we can't move it to bag for whatever reason, abort
-@@ -517,6 +524,7 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 return false;
-         }
- 
-+        // Owner.SendMessage($"ItemMove {action}: {fromItemId} {fromType}:{fromSlot} => {toItemId} {toType}:{toSlot} - {count}");
-         // Actually execute what we need to do
-         var itemTasks = new List<ItemTask>();
-         switch (action)
-@@ -524,6 +532,7 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-             case SwapAction.doEquipInEmptySlot:
-                 itemInTargetSlot.SlotType = sourceContainer.ContainerType;
-                 itemInTargetSlot.Slot = fromSlot;
-+                
-                 itemTasks.Add(new ItemMove(fromType, fromSlot, fromItemId, toType, toSlot, toItemId));
-                 if (targetContainer != sourceContainer)
-                 {
-@@ -545,13 +554,13 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 itemTasks.Add(new ItemAdd(ni));
-                 if (targetContainer != sourceContainer)
-                     targetContainer.UpdateFreeSlotCount();
--                else
--                    sourceContainer.UpdateFreeSlotCount();
-+                sourceContainer.UpdateFreeSlotCount();
-                 break;
-             case SwapAction.doMoveAllToEmpty:
-                 fromItem.SlotType = targetContainer.ContainerType;
-                 fromItem.Slot = toSlot;
--                itemTasks.Add(new ItemMove(fromType, fromSlot, fromItem.Id, toType, toSlot, toItemId));
-+                itemTasks.Add(new ItemMove(fromType, fromSlot, fromItemId, toType, toSlot, toItemId));
-+                // itemTasks.Add(new ItemMove(fromType, fromSlot, fromItem.Id, toType, toSlot, toItemId));
-                 if (targetContainer != sourceContainer)
-                 {
-                     sourceContainer.Items.Remove(fromItem);
-@@ -563,9 +572,9 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 break;
-             case SwapAction.doMerge:
-                 // Merge x amount into target
--                var toAddCount = Math.Min(count, itemInTargetSlot.Template.MaxCount - itemInTargetSlot.Count);
-+                var toAddCount = Math.Min(count, itemInTargetSlot!.Template.MaxCount - itemInTargetSlot.Count);
-                 if (toAddCount < count)
--                    Logger.Trace(string.Format("SplitOrMoveItem supplied more than target can take, changed {0} to {1}", count, toAddCount));
-+                    Logger.Trace($"SplitOrMoveItem supplied more than target can take, changed {count} to {toAddCount}");
-                 itemInTargetSlot.Count += toAddCount;
-                 fromItem.Count -= toAddCount;
-                 if (fromItem.Count > 0)
-@@ -581,17 +590,18 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                 break;
-             case SwapAction.doSwap:
-                 // Swap both item slots
--                itemTasks.Add(new ItemMove(fromType, fromSlot, fromItem.Id, toType, toSlot, itemInTargetSlot.Id));
--                fromItem.SlotType = targetContainer.ContainerType;
-+                itemTasks.Add(new ItemMove(fromType, fromSlot, fromItemId, toType, toSlot, toItemId));
-+                // itemTasks.Add(new ItemMove(fromType, fromSlot, fromItem!.Id, toType, toSlot, itemInTargetSlot!.Id));
-+                fromItem!.SlotType = targetContainer!.ContainerType;
-                 fromItem.Slot = toSlot;
--                if (sourceContainer != targetContainer)
-+                if (sourceContainer != null && sourceContainer != targetContainer)
-                 {
-                     sourceContainer.Items.Remove(fromItem);
-                     targetContainer.Items.Add(fromItem);
-                     fromItem._holdingContainer = targetContainer;
-                     targetContainer.UpdateFreeSlotCount();
-                 }
--                itemInTargetSlot.SlotType = sourceContainer.ContainerType;
-+                itemInTargetSlot!.SlotType = sourceContainer!.ContainerType;
-                 itemInTargetSlot.Slot = fromSlot;
-                 if (sourceContainer != targetContainer)
-                 {
-@@ -601,7 +611,9 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-                     sourceContainer.UpdateFreeSlotCount();
-                 }
-                 break;
-+            case SwapAction.doNothing:
-             default:
-+                // Should be impossible to get here
-                 Owner.SendMessage("|cFFFF0000SplitOrMoveItem swap action not implemented " + action + "|r");
-                 Logger.Error("SplitOrMoveItem swap action not implemented " + action);
-                 break;
-@@ -613,73 +625,26 @@ public bool SplitOrMoveItemEx(ItemTaskType taskType, ItemContainer sourceContain
-         if (itemInTargetSlot != null)
-             itemInTargetSlot.OwnerId = targetContainer?.OwnerId ?? 0;
- 
--        // Handle Equipment Broadcasting
--        var mates = MateManager.Instance.GetActiveMates(Owner.ObjId);
--        var slave = SlaveManager.Instance.GetSlaveByOwnerObjId(Owner.ObjId);
--
--        if (fromType == SlotType.Equipment)
--        {
--            Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(Owner.ObjId, fromSlot, Equipment.GetItemBySlot(fromSlot)), false);
--        }
--        else
--        {
--            if (mates != null)
--            {
--                foreach (var mate in mates)
--                {
--                    if (mate is not null && fromType == SlotType.EquipmentMate)
--                    {
--                        Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(mate.ObjId, fromSlot, null), true);
--                    }
--                }
--            }
--            else if (slave != null && fromType == SlotType.EquipmentSlave)
--            {
--                Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(slave.ObjId, fromSlot, null), true);
--            }
--        }
--
--        if (toType == SlotType.Equipment)
--        {
--            Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(Owner.ObjId, toSlot, Equipment.GetItemBySlot(toSlot)), false);
--        }
--        else
--        {
--            if (mates != null)
--            {
--                foreach (var mate in mates)
--                {
--                    if (mate is not null && toType == SlotType.EquipmentMate)
--                    {
--                        Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(mate.ObjId, toSlot, fromItem), true);
--                    }
--                }
--            }
--            else if (slave != null && toType == SlotType.EquipmentSlave)
--            {
--                Owner.BroadcastPacket(new SCUnitEquipmentsChangedPacket(slave.ObjId, toSlot, fromItem), true);
--            }
--        }
-+        // Send Item manipulation packet 
-+        if (taskType != ItemTaskType.Invalid && itemTasks.Count > 0)
-+            Owner.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
- 
-         // Send ItemContainer events
-         if (sourceContainer != targetContainer)
-         {
-             if (fromItem != null)
-             {
--                sourceContainer?.OnLeaveContainer(fromItem, targetContainer);
--                targetContainer?.OnEnterContainer(fromItem, sourceContainer);
-+                sourceContainer?.OnLeaveContainer(fromItem, targetContainer, fromSlot);
-+                targetContainer?.OnEnterContainer(fromItem, sourceContainer, fromSlot);
-             }
- 
-             if (itemInTargetSlot != null)
-             {
--                targetContainer?.OnLeaveContainer(itemInTargetSlot, sourceContainer);
--                sourceContainer?.OnEnterContainer(itemInTargetSlot, targetContainer);
-+                targetContainer?.OnLeaveContainer(itemInTargetSlot, sourceContainer, fromSlot);
-+                sourceContainer?.OnEnterContainer(itemInTargetSlot, targetContainer, fromSlot);
-             }
-         }
- 
--        if (taskType != ItemTaskType.Invalid && itemTasks.Count > 0)
--            Owner.SendPacket(new SCItemTaskSuccessPacket(taskType, itemTasks, new List<ulong>()));
--
-         sourceContainer.ApplyBindRules(taskType);
-         if (targetContainer != sourceContainer)
-             targetContainer.ApplyBindRules(taskType);
 diff --git a/AAEmu.Game/Models/Game/Items/Actions/ItemRemove.cs b/AAEmu.Game/Models/Game/Items/Actions/ItemRemove.cs
-index d1f0a21a0..7ee71a13b 100644
+index 7ee71a13bc..61f306eae5 100644
 --- a/AAEmu.Game/Models/Game/Items/Actions/ItemRemove.cs
 +++ b/AAEmu.Game/Models/Game/Items/Actions/ItemRemove.cs
-@@ -14,6 +14,16 @@ public ItemRemove(Item item)
-         _item = item;
+@@ -6,36 +6,51 @@ namespace AAEmu.Game.Models.Game.Items.Actions;
+ 
+ public class ItemRemove : ItemTask
+ {
+-    private readonly Item _item;
++    private readonly ulong _itemId;
++    private readonly byte _slotType;
++    private readonly byte _slot;
++    private readonly uint _templateId;
++    private readonly int _itemCount;
++    private readonly DateTime _removeReservationTime;
+ 
+     public ItemRemove(Item item)
+     {
+         _type = ItemAction.Remove; // 7
+-        _item = item;
++
++        _itemId = item.Id;
++        _slotType = (byte)item.SlotType;
++        _slot = (byte)item.Slot;
++        _templateId = item.TemplateId;
++        _removeReservationTime = DateTime.MinValue;
++        _itemCount = item.Count;
      }
  
-+    public ItemRemove(ulong itemId, SlotType slotType, byte slotNumber, uint itemTemplateId)
-+    {
-+        _type = ItemAction.Remove;
+     public ItemRemove(ulong itemId, SlotType slotType, byte slotNumber, uint itemTemplateId)
+     {
+-        _type = ItemAction.Remove;
++        _type = ItemAction.Remove; // 7
+ 
+         _itemId = itemId;
+-        _slotType = slotType;
++        _slotType = (byte)slotType;
+         _slot = slotNumber;
+         _templateId = itemTemplateId;
++        _removeReservationTime = DateTime.MinValue;
++        _itemCount = 1;
 +
-+        _itemId = itemId;
-+        _slotType = slotType;
-+        _slot = slotNumber;
-+        _templateId = itemTemplateId;
-+    }
-+
+     }
+ 
      public override PacketStream Write(PacketStream stream)
      {
          base.Write(stream);
-diff --git a/AAEmu.Game/Models/Game/Items/Containers/CofferContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/CofferContainer.cs
-index 9da8a68ae..ec5dc592f 100644
---- a/AAEmu.Game/Models/Game/Items/Containers/CofferContainer.cs
-+++ b/AAEmu.Game/Models/Game/Items/Containers/CofferContainer.cs
-@@ -9,7 +9,7 @@ public class CofferContainer : ItemContainer
-     public byte CofferPermission { get; set; }
-     public ChestType CofferType { get; set; }
  
--    public CofferContainer(uint ownerId, bool createWithNewId) : base(ownerId, SlotType.Trade, createWithNewId)
-+    public CofferContainer(uint ownerId, bool createWithNewId) : base(ownerId, SlotType.Trade, createWithNewId, null)
-     {
-         // Coffers are considered trade windows in the item manipulation code
-         CofferPermission = 0;
+-        stream.Write((byte)_item.SlotType); // type
+-        stream.Write((byte)_item.Slot);     // index
+-        stream.Write(_item.Id);             // id
+-        stream.Write(_item.Count);          // stack
+-        stream.Write(DateTime.MinValue);    // removeReservationTime
+-        stream.Write(_item.TemplateId);     // type
+-        stream.Write((uint)0u);              // dbSlaveId
+-        stream.Write((uint)0u);              // type
++        stream.Write(_slotType);              // type
++        stream.Write(_slot);                  // index
++        stream.Write(_itemId);                // id
++        stream.Write(_itemCount);             // stack
++        stream.Write(_removeReservationTime); // removeReservationTime
++        stream.Write(_templateId);            // type
++        stream.Write(0u);                     // dbSlaveId
++        stream.Write(0u);                     // type
++
+         return stream;
+     }
+ }
 diff --git a/AAEmu.Game/Models/Game/Items/Containers/EquipmentContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/EquipmentContainer.cs
-index d37ee6fe7..7845e9b94 100644
+index 7845e9b94b..d3ddf0e73d 100644
 --- a/AAEmu.Game/Models/Game/Items/Containers/EquipmentContainer.cs
 +++ b/AAEmu.Game/Models/Game/Items/Containers/EquipmentContainer.cs
-@@ -2,14 +2,15 @@
- using System.Collections.Generic;
- using System.Linq;
- 
-+using AAEmu.Game.Core.Packets.G2C;
+@@ -5,6 +5,7 @@
+ using AAEmu.Game.Core.Packets.G2C;
  using AAEmu.Game.Models.Game.Items.Templates;
--using AAEmu.Game.Models.StaticValues;
-+using AAEmu.Game.Models.Game.Units;
+ using AAEmu.Game.Models.Game.Units;
++using AAEmu.Game.Models.StaticValues;
  
  namespace AAEmu.Game.Models.Game.Items.Containers;
  
- public class EquipmentContainer : ItemContainer
- {
--    public EquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId) : base(ownerId, containerType, createWithNewId)
-+    public EquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId, Unit parentUnit) : base(ownerId, containerType, createWithNewId, parentUnit)
-     {
-         // Fancy way of getting the last enum value + 1 for equipment slots
-         ContainerSize = (int)(Enum.GetValues(typeof(EquipmentItemSlot)).Cast<EquipmentItemSlot>().Max()) + 1;
-@@ -206,15 +207,17 @@ public override bool CanAccept(Item item, int targetSlot)
-         return true;
-     }
- 
--    public override void OnEnterContainer(Item item, ItemContainer lastContainer)
-+    public override void OnEnterContainer(Item item, ItemContainer lastContainer, byte previousSlot)
-     {
--        base.OnEnterContainer(item, lastContainer);
--        Owner?.UpdateGearBonuses(item, null);
-+        base.OnEnterContainer(item, lastContainer, previousSlot); 
-+        ParentUnit?.BroadcastPacket(new SCUnitEquipmentsChangedPacket(ParentUnit.ObjId, (byte)item.Slot, item), false);
-+        ParentUnit?.UpdateGearBonuses(item, null);
-     }
- 
--    public override void OnLeaveContainer(Item item, ItemContainer newContainer)
-+    public override void OnLeaveContainer(Item item, ItemContainer newContainer, byte previousSlot)
-     {
--        base.OnLeaveContainer(item, newContainer);
--        Owner?.UpdateGearBonuses(null, item);
-+        base.OnLeaveContainer(item, newContainer, previousSlot);
-+        ParentUnit?.BroadcastPacket(new SCUnitEquipmentsChangedPacket(ParentUnit.ObjId, previousSlot, null), false);
-+        ParentUnit?.UpdateGearBonuses(null, item);
-     }
- }
 diff --git a/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
-index c4f993a03..3f6df33aa 100644
+index 3f6df33aa4..c3dc09f049 100644
 --- a/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
 +++ b/AAEmu.Game/Models/Game/Items/Containers/ItemContainer.cs
-@@ -11,7 +11,7 @@
- using AAEmu.Game.Models.Game.Char;
+@@ -12,6 +12,7 @@
  using AAEmu.Game.Models.Game.Items.Actions;
  using AAEmu.Game.Models.Game.Items.Templates;
--
-+using AAEmu.Game.Models.Game.Units;
+ using AAEmu.Game.Models.Game.Units;
++
  using NLog;
  
  namespace AAEmu.Game.Models.Game.Items.Containers;
-@@ -27,6 +27,8 @@ public class ItemContainer
+@@ -27,7 +28,7 @@ public class ItemContainer
      public bool IsDirty { get; set; }
      private readonly SlotType _containerType;
      private ulong _containerId;
-+    
-+    public Unit ParentUnit { get; set; }
+-    
++
+     public Unit ParentUnit { get; set; }
  
      public ICharacter Owner
-     {
-@@ -135,10 +137,18 @@ protected ItemContainer()
-         ContainerSize = 0;
-     }
- 
--    public ItemContainer(uint ownerId, SlotType containerType, bool createWithNewId)
-+    /// <summary>
-+    /// Creates a Container
-+    /// </summary>
-+    /// <param name="ownerId">Player Id for this container</param>
-+    /// <param name="containerType"></param>
-+    /// <param name="createWithNewId"></param>
-+    /// <param name="parentUnit">Parent that will actually hold this container (can be different from Owner)</param>
-+    public ItemContainer(uint ownerId, SlotType containerType, bool createWithNewId, Unit parentUnit)
-     {
-         OwnerId = ownerId;
-         ContainerType = containerType;
-+        ParentUnit = parentUnit;
-         Items = new List<Item>();
-         ContainerSize = -1; // Unlimited
-         if (createWithNewId)
-@@ -382,8 +392,8 @@ public bool AddOrMoveExistingItem(ItemTaskType taskType, Item item, int preferre
- 
-             if (sourceContainer != this)
-             {
--                sourceContainer?.OnLeaveContainer(item, this);
--                OnEnterContainer(item, sourceContainer);
-+                sourceContainer?.OnLeaveContainer(item, this, sourceSlot);
-+                OnEnterContainer(item, sourceContainer, sourceSlot);
-             }
-         }
- 
-@@ -451,6 +461,8 @@ public bool RemoveItem(ItemTaskType task, Item item, bool releaseIdAsWell)
-             return false;
-         }
- 
-+        var oldSlotNumber = (byte)item.Slot;
-+
-         // Handle items that can expire
-         GamePacket sync = null;
-         if (item.ExpirationOnlineMinutesLeft > 0.0 || item.ExpirationTime > DateTime.UtcNow || item.UnpackTime > DateTime.UtcNow)
-@@ -478,7 +490,7 @@ public bool RemoveItem(ItemTaskType task, Item item, bool releaseIdAsWell)
-         UpdateFreeSlotCount();
- 
-         Owner?.Inventory.OnConsumedItem(item, item.Count);
--        OnLeaveContainer(item, null);
-+        OnLeaveContainer(item, null, oldSlotNumber);
- 
-         return res;
-     }
-@@ -829,26 +841,30 @@ public bool GetAllItemsByTemplate(uint templateId, out List<Item> foundItems, ou
-         return foundItems.Count > 0;
-     }
- 
-+    /// <summary>
-+    /// Apply Bound flag to items when needed by the container (BindOnPickup, BindOnEquip)
-+    /// </summary>
-+    /// <param name="taskType"></param>
-     public void ApplyBindRules(ItemTaskType taskType)
-     {
-         var itemTasks = new List<ItemTask>();
--        foreach (var i in Items)
-+        foreach (var item in Items)
-         {
--            if (i.HasFlag(ItemFlag.SoulBound) == false)
-+            if (item.HasFlag(ItemFlag.SoulBound) == false)
-             {
--                if (ContainerType == SlotType.Inventory && i.Template.BindType == ItemBindType.BindOnPickup)
-+                if (ContainerType == SlotType.Inventory && item.Template.BindType == ItemBindType.BindOnPickup)
-                 {
--                    i.SetFlag(ItemFlag.SoulBound);
-+                    item.SetFlag(ItemFlag.SoulBound);
-                 }
- 
--                if (ContainerType == SlotType.Equipment && i.Template.BindType == ItemBindType.BindOnEquip)
-+                if (ContainerType == SlotType.Equipment && item.Template.BindType == ItemBindType.BindOnEquip)
-                 {
--                    i.SetFlag(ItemFlag.SoulBound);
-+                    item.SetFlag(ItemFlag.SoulBound);
-                 }
- 
--                if (i.HasFlag(ItemFlag.SoulBound))
-+                if (item.HasFlag(ItemFlag.SoulBound))
-                 {
--                    itemTasks.Add(new ItemUpdateBits(i));
-+                    itemTasks.Add(new ItemUpdateBits(item));
-                 }
-             }
-         }
-@@ -892,24 +908,25 @@ public virtual bool CanAccept(Item item, int targetSlot)
-     /// Creates a ItemContainer or descendant base of the name of the container type
-     /// </summary>
-     /// <param name="containerTypeName"></param>
--    /// <param name="ownerId"></param>
-+    /// <param name="ownerId">Player Id that owns the items in this container</param>
-     /// <param name="slotType"></param>
-     /// <param name="createWithNewId"></param>
-+    /// <param name="parentUnit">Actual unit that will hold this container</param>
-     /// <returns></returns>
-     public static ItemContainer CreateByTypeName(string containerTypeName, uint ownerId, SlotType slotType,
--        bool createWithNewId)
-+        bool createWithNewId, Unit parentUnit)
+@@ -917,7 +918,7 @@ public static ItemContainer CreateByTypeName(string containerTypeName, uint owne
+         bool createWithNewId, Unit parentUnit)
      {
          if (containerTypeName.EndsWith("SlaveEquipmentContainer"))
-             return new SlaveEquipmentContainer(ownerId, slotType, createWithNewId);
+-            return new SlaveEquipmentContainer(ownerId, slotType, createWithNewId);
++            return new SlaveEquipmentContainer(ownerId, slotType, createWithNewId, parentUnit);
  
          if (containerTypeName.EndsWith("MateEquipmentContainer"))
          {
--            return new MateEquipmentContainer(ownerId, slotType, createWithNewId);
-+            return new MateEquipmentContainer(ownerId, slotType, createWithNewId, parentUnit);
-         }
- 
-         if (containerTypeName.EndsWith("EquipmentContainer"))
-         {
--            return new EquipmentContainer(ownerId, slotType, createWithNewId);
-+            return new EquipmentContainer(ownerId, slotType, createWithNewId, parentUnit);
-         }
- 
-         if (containerTypeName.EndsWith("CofferContainer"))
-@@ -918,7 +935,7 @@ public static ItemContainer CreateByTypeName(string containerTypeName, uint owne
-         }
- 
-         // Fall-back
--        return new ItemContainer(ownerId, slotType, createWithNewId);
-+        return new ItemContainer(ownerId, slotType, createWithNewId, parentUnit);
-     }
- 
-     public string ContainerTypeName()
-@@ -937,12 +954,12 @@ public virtual void Delete()
-         ItemManager.Instance.DeleteItemContainer(this);
-     }
- 
--    public virtual void OnEnterContainer(Item item, ItemContainer lastContainer)
-+    public virtual void OnEnterContainer(Item item, ItemContainer lastContainer, byte previousSlot)
-     {
-         // Do nothing
-     }
- 
--    public virtual void OnLeaveContainer(Item item, ItemContainer newContainer)
-+    public virtual void OnLeaveContainer(Item item, ItemContainer newContainer, byte previousSlot)
-     {
-         // Do Nothing
-     }
 diff --git a/AAEmu.Game/Models/Game/Items/Containers/MateEquipmentContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/MateEquipmentContainer.cs
-index 5e8bceb45..e21e05e40 100644
+index e21e05e409..bc9e9edf2e 100644
 --- a/AAEmu.Game/Models/Game/Items/Containers/MateEquipmentContainer.cs
 +++ b/AAEmu.Game/Models/Game/Items/Containers/MateEquipmentContainer.cs
-@@ -1,57 +1,69 @@
+@@ -23,7 +23,7 @@ public override void OnEnterContainer(Item item, ItemContainer lastContainer, by
+             {
+                 return;
+             }
+-            
++
+             var petItem = new ItemAndLocation()
+             {
+                 Item = item,
+diff --git a/AAEmu.Game/Models/Game/Items/Containers/SlaveEquipmentContainer.cs b/AAEmu.Game/Models/Game/Items/Containers/SlaveEquipmentContainer.cs
+index 6c953d8c2a..2920391559 100644
+--- a/AAEmu.Game/Models/Game/Items/Containers/SlaveEquipmentContainer.cs
++++ b/AAEmu.Game/Models/Game/Items/Containers/SlaveEquipmentContainer.cs
+@@ -1,47 +1,69 @@
  ﻿using System;
  using System.Linq;
  
@@ -1564,87 +740,79 @@ index 5e8bceb45..e21e05e40 100644
  
 -namespace AAEmu.Game.Models.Game.Items.Containers;
 -
--public class MateEquipmentContainer : EquipmentContainer
+-public class SlaveEquipmentContainer : EquipmentContainer
 +namespace AAEmu.Game.Models.Game.Items.Containers
  {
--    public MateEquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId) : base(ownerId, containerType, createWithNewId)
+-    public SlaveEquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId) : base(ownerId, containerType, createWithNewId)
 -    {
 -        // Fancy way of getting the last enum value + 1 for equipment slots
 -        ContainerSize = (int)Enum.GetValues(typeof(EquipmentItemSlot)).Cast<EquipmentItemSlot>().Max() + 1;
 -    }
 -
 -    public override void OnEnterContainer(Item item, ItemContainer lastContainer)
-+    public class MateEquipmentContainer : EquipmentContainer
++    public class SlaveEquipmentContainer : EquipmentContainer
      {
--        Logger.Debug("mate OnEnterContainer");
+-        Logger.Debug("slave OnEnterContainer");
 -        base.OnEnterContainer(item, lastContainer);
 -
 -        if (Owner == null)
 -            return;
-+        public MateEquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId, Unit parentUnit) : base(ownerId, containerType, createWithNewId, parentUnit)
-+        {
+-
+-        var slave = SlaveManager.Instance.GetSlaveByOwnerObjId(Owner.ObjId);
+-        if (slave != null)
++        public SlaveEquipmentContainer(uint ownerId, SlotType containerType, bool createWithNewId, Unit parentUnit) : base(ownerId, containerType, createWithNewId, parentUnit)
+         {
+-            //mate.UpdateGearBonuses(item, null);
+-            //Owner?.MatesUpdateGearBonuses(item, null);
 +            // Fancy way of getting the last enum value + 1 for equipment slots
 +            ContainerSize = (int)Enum.GetValues(typeof(EquipmentItemSlot)).Cast<EquipmentItemSlot>().Max() + 1;
-+        }
+         }
+-    }
  
--        var mates = MateManager.Instance.GetActiveMates(Owner.ObjId);
--        if (mates != null)
+-    public override void OnLeaveContainer(Item item, ItemContainer newContainer)
+-    {
+-        Logger.Debug("slave OnLeaveContainer");
 +        public override void OnEnterContainer(Item item, ItemContainer lastContainer, byte previousSlot)
-         {
--            foreach (var mate in mates)
--            {
--                if (mate == null) continue;
++        {
 +            base.OnEnterContainer(item, lastContainer, previousSlot); // base EquipmentContainer
  
--                //mate.UpdateGearBonuses(item, null);
--                //Owner?.MatesUpdateGearBonuses(item, null);
-+            // Extra pockets for mates
-+            if (ParentUnit is not Units.Mate mate)
+-        base.OnLeaveContainer(item, newContainer);
++            // Extra pockets for slaves
++            if (ParentUnit is not Units.Slave slave)
 +            {
 +                return;
-             }
-+            
-+            var petItem = new ItemAndLocation()
++            }
+ 
+-        if (Owner == null)
+-            return;
++            var petItem = new ItemAndLocation
 +            {
 +                Item = item,
 +                SlotType = lastContainer.ContainerType, // ContainerType,
 +                SlotNumber = previousSlot,
 +            };
-+            var inventoryItem = new ItemAndLocation()
++            var inventoryItem = new ItemAndLocation
 +            {
 +                Item = null,
 +                SlotType = ContainerType,
 +                SlotNumber = (byte)item.Slot,
 +            };
 +            // Owner.SendMessage($"MateEquipmentContainer - {petItem} -> {inventoryItem}, MateTl: {mate.TlId}");
-+            Owner.SendPacket(new SCMateEquipmentChangedPacket(petItem, inventoryItem, mate.TlId, Owner.Id, 0, false, true));
-         }
--    }
--
--    public override void OnLeaveContainer(Item item, ItemContainer newContainer)
--    {
--        Logger.Debug("mate OnLeaveContainer");
--
--        base.OnLeaveContainer(item, newContainer);
--
--        if (Owner == null)
--            return;
++            Owner.SendPacket(new SCSlaveEquipmentChangedPacket(petItem, inventoryItem, slave.TlId, Owner.Id, 0, false, true));
++        }
  
--        var mates = MateManager.Instance.GetActiveMates(Owner.ObjId);
--        if (mates != null)
+-        var slave = SlaveManager.Instance.GetSlaveByOwnerObjId(Owner.ObjId);
+-        if (slave != null)
 +        public override void OnLeaveContainer(Item item, ItemContainer newContainer, byte previousSlot)
          {
--            foreach (var mate in mates)
--            {
--                if (mate == null) continue;
+-            //mate.UpdateGearBonuses(null, item);
 +            base.OnLeaveContainer(item, newContainer, previousSlot); // base EquipmentContainer
- 
--                //mate.UpdateGearBonuses(null, item);
++
 +            // Extra pockets for mates
 +            if (ParentUnit is not Units.Mate mate)
 +            {
 +                return;
-             }
++            }
 +
 +            var petItem = new ItemAndLocation()
 +            {
@@ -1663,702 +831,115 @@ index 5e8bceb45..e21e05e40 100644
          }
      }
  }
-diff --git a/AAEmu.Game/Models/Game/Items/ItemAndLocation.cs b/AAEmu.Game/Models/Game/Items/ItemAndLocation.cs
-new file mode 100644
-index 000000000..c1ad5157b
---- /dev/null
-+++ b/AAEmu.Game/Models/Game/Items/ItemAndLocation.cs
-@@ -0,0 +1,13 @@
-+﻿namespace AAEmu.Game.Models.Game.Items;
-+
-+public struct ItemAndLocation
-+{
-+    public Item Item { get; set; }
-+    public SlotType SlotType { get; set; }
-+    public byte SlotNumber { get; set; }
-+
-+    public override string ToString()
-+    {
-+        return $"({SlotType} #{SlotNumber}: {Item?.Id ?? 0})";
-+    }
-+}
-diff --git a/AAEmu.Game/Models/Game/Items/ItemIdAndLocation.cs b/AAEmu.Game/Models/Game/Items/ItemIdAndLocation.cs
-index 6bb178e6c..2005b7077 100644
---- a/AAEmu.Game/Models/Game/Items/ItemIdAndLocation.cs
-+++ b/AAEmu.Game/Models/Game/Items/ItemIdAndLocation.cs
-@@ -2,7 +2,12 @@
- 
- public struct ItemIdAndLocation
- {
--    public ulong Id;
--    public SlotType SlotType;
--    public byte Slot;
-+    public ulong Id { get; set; }
-+    public SlotType SlotType { get; set; }
-+    public byte Slot { get; set; }
-+    
-+    public override string ToString()
-+    {
-+        return $"({SlotType} #{Slot}: {Id})";
-+    }
- }
-diff --git a/AAEmu.Game/Models/Game/Items/ItemLocation.cs b/AAEmu.Game/Models/Game/Items/ItemLocation.cs
-index 8712fd61a..a69fe0577 100644
---- a/AAEmu.Game/Models/Game/Items/ItemLocation.cs
-+++ b/AAEmu.Game/Models/Game/Items/ItemLocation.cs
-@@ -2,6 +2,11 @@
- 
- public struct ItemLocation
- {
--    public SlotType slotType;
--    public byte Slot;
-+    public SlotType SlotType { get; set; }
-+    public byte Slot { get; set; }
-+
-+    public override string ToString()
-+    {
-+        return $"({SlotType} #{Slot})";
-+    }
- }
-diff --git a/AAEmu.Game/Models/Game/Units/IUnit.cs b/AAEmu.Game/Models/Game/Units/IUnit.cs
-index 97c13eca3..248f6f3d4 100644
---- a/AAEmu.Game/Models/Game/Units/IUnit.cs
-+++ b/AAEmu.Game/Models/Game/Units/IUnit.cs
-@@ -1,4 +1,5 @@
- ﻿using AAEmu.Game.Core.Network.Game;
-+using AAEmu.Game.Models.Game.Items;
- using AAEmu.Game.Models.Game.Items.Containers;
- using AAEmu.Game.Models.Game.Skills.Static;
- 
-@@ -12,4 +13,5 @@ public interface IUnit : IBaseUnit
-     ItemContainer Equipment { get; set; }
-     void SendPacket(GamePacket packet);
-     SkillResult UseSkill(uint skillId, IUnit target);
-+    void UpdateGearBonuses(Item itemAdded, Item itemRemoved);
- }
-diff --git a/AAEmu.Game/Models/Game/Units/Mate.cs b/AAEmu.Game/Models/Game/Units/Mate.cs
-index 6097e9a63..fc1768551 100644
---- a/AAEmu.Game/Models/Game/Units/Mate.cs
-+++ b/AAEmu.Game/Models/Game/Units/Mate.cs
-@@ -500,7 +500,7 @@ public Mate()
-         ModelParams = new UnitCustomModelParams();
-         Skills = new List<uint>();
-         Passengers = new Dictionary<AttachPointKind, MatePassengerInfo>();
--        Equipment = new MateEquipmentContainer(0, SlotType.EquipmentMate, false);
-+        Equipment = new MateEquipmentContainer(0, SlotType.EquipmentMate, false, this);
- 
-         // TODO: Spawn this with the correct amount of seats depending on the template
-         // 2 seats by default
 diff --git a/AAEmu.Game/Models/Game/Units/Unit.cs b/AAEmu.Game/Models/Game/Units/Unit.cs
-index 5053b6c4f..dacae589b 100644
+index dacae589ba..5ee266e0a0 100644
 --- a/AAEmu.Game/Models/Game/Units/Unit.cs
 +++ b/AAEmu.Game/Models/Game/Units/Unit.cs
-@@ -9,15 +9,18 @@
- using AAEmu.Game.Core.Network.Connections;
- using AAEmu.Game.Core.Network.Game;
- using AAEmu.Game.Core.Packets.G2C;
-+using AAEmu.Game.GameData;
- using AAEmu.Game.Models.Game.Char;
- using AAEmu.Game.Models.Game.Expeditions;
- using AAEmu.Game.Models.Game.Items;
- using AAEmu.Game.Models.Game.Items.Containers;
-+using AAEmu.Game.Models.Game.Items.Templates;
- using AAEmu.Game.Models.Game.NPChar;
- using AAEmu.Game.Models.Game.Skills;
- using AAEmu.Game.Models.Game.Skills.Plots.Tree;
- using AAEmu.Game.Models.Game.Skills.SkillControllers;
- using AAEmu.Game.Models.Game.Skills.Static;
-+using AAEmu.Game.Models.Game.Skills.Templates;
- using AAEmu.Game.Models.Game.Static;
- using AAEmu.Game.Models.Game.Units.Route;
- using AAEmu.Game.Models.Game.Units.Static;
-@@ -273,7 +276,7 @@ public Unit()
-         GcdLock = new object();
-         Bonuses = new Dictionary<uint, List<Bonus>>();
-         IsInBattle = false;
--        Equipment = new EquipmentContainer(0, SlotType.Equipment, false);
-+        Equipment = new EquipmentContainer(0, SlotType.Equipment, false, this);
-         ChargeLock = new object();
-         Cooldowns = new UnitCooldowns();
-     }
-@@ -1022,4 +1025,409 @@ public virtual void Regenerate()
-     {
-         // Do nothing
-     }
-+
-+    public WeaponWieldKind GetWeaponWieldKind()
-+    {
-+        var item = Equipment.GetItemBySlot((int)EquipmentItemSlot.Mainhand);
-+        if (item != null && item.Template is WeaponTemplate weapon)
-+        {
-+            var slotId = (EquipmentItemSlotType)weapon.HoldableTemplate.SlotTypeId;
-+            if (slotId == EquipmentItemSlotType.TwoHanded)
-+                return WeaponWieldKind.TwoHanded;
-+            else if (slotId == EquipmentItemSlotType.OneHanded || slotId == EquipmentItemSlotType.Mainhand)
-+            {
-+                var item2 = Equipment.GetItemBySlot((int)EquipmentItemSlot.Offhand);
-+                if (item2 != null && item2.Template is WeaponTemplate weapon2)
-+                {
-+                    var slotId2 = (EquipmentItemSlotType)weapon2.HoldableTemplate.SlotTypeId;
-+                    if (slotId2 == EquipmentItemSlotType.OneHanded || slotId2 == EquipmentItemSlotType.Offhand)
-+                        return WeaponWieldKind.DuelWielded;
-+                    else
-+                        return WeaponWieldKind.OneHanded;
-+                }
-+                else
-+                    return WeaponWieldKind.OneHanded;
-+            }
-+        }
-+
-+        return WeaponWieldKind.None;
-+    }
-+
-+    public void UpdateGearBonuses(Item itemAdded, Item itemRemoved)
-+    {
-+        // We use index 1 for gear bonuses. Will make this a constant later, or do it properly. Right now the expected behavior is to have key == buff id, which doesn't work when you have items.
-+        Bonuses[1] = new List<Bonus>();
-+
-+        foreach (var item in Equipment.Items)
-+        {
-+            if (item is not EquipItem ei)
-+                continue;
-+
-+            // Mods on the gear Itself
-+            foreach (var template in ItemManager.Instance.GetUnitModifiers(item.TemplateId))
-+                AddBonus(1, new Bonus { Template = template, Value = template.Value });
-+
-+            // Mods from equipped Gems
-+            foreach (var gem in ei.GemIds)
-+            foreach (var template in ItemManager.Instance.GetUnitModifiers(gem))
-+                AddBonus(1, new Bonus { Template = template, Value = template.Value });
-+        }
-+
-+        // Apply Equipment Effects
-+        ApplyEquipEffects(itemAdded, itemRemoved);
-+
-+        // Compute gear buff
-+        ApplyWeaponWieldBuff();
-+        ApplyArmorGradeBuff(itemAdded, itemRemoved);
-+        ApplyEquipItemSetBonuses();
-+    }
-+
-+    private void ApplyWeaponWieldBuff()
-+    {
-+        Buffs.RemoveBuff((uint)BuffConstants.EquipDualwield);
-+        Buffs.RemoveBuff((uint)BuffConstants.EquipShield);
-+        Buffs.RemoveBuff((uint)BuffConstants.EquipTwoHanded);
-+
-+        BuffTemplate buffTemplate = null;
-+        switch (GetWeaponWieldKind())
-+        {
-+            case WeaponWieldKind.None:
-+            case WeaponWieldKind.OneHanded:
-+                var item = Equipment.GetItemBySlot((int)EquipmentItemSlot.Offhand);
-+                if (item != null && item.Template is WeaponTemplate weapon)
-+                {
-+                    var slotId = (EquipmentItemSlotType)weapon.HoldableTemplate.SlotTypeId;
-+                    if (slotId == EquipmentItemSlotType.Shield)
-+                        buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipShield);
-+                }
-+                break;
-+            case WeaponWieldKind.TwoHanded:
-+                buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipTwoHanded);
-+                break;
-+            case WeaponWieldKind.DuelWielded:
-+                buffTemplate = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.EquipDualwield);
-+                break;
-+        }
-+
-+        if (buffTemplate != null)
-+        {
-+            var effect = new Buff(this, this, new SkillCasterUnit(ObjId), buffTemplate, null, DateTime.UtcNow);
-+            Buffs.AddBuff(effect);
-+        }
-+    }
-+
-+    private void ApplyEquipItemSetBonuses()
-+    {
-+        var setNumPieces = new Dictionary<uint, int>();
-+        var itemLevels = new Dictionary<uint, uint>();
-+        foreach (var item in Equipment.Items)
-+        {
-+            if (item.Template is EquipItemTemplate template)
-+            {
-+                var equipItemSetId = template.EquipItemSetId;
-+                if (template.EquipItemSetId == 0)
-+                    continue;
-+
-+                if (!setNumPieces.ContainsKey(equipItemSetId))
-+                {
-+                    setNumPieces.Add(equipItemSetId, (1));
-+                    itemLevels.Add(equipItemSetId, (uint)item.Template.Level);
-+                }
-+                else
-+                {
-+                    setNumPieces[equipItemSetId]++;
-+                    if (item.Template.Level < itemLevels[equipItemSetId])
-+                        itemLevels[equipItemSetId] = (uint)item.Template.Level;
-+                }
-+            }
-+        }
-+
-+        var appliedBuffs = new HashSet<uint>();
-+        foreach (var setCount in setNumPieces)
-+        {
-+            var equipItemSet = ItemManager.Instance.GetEquippedItemSet(setCount.Key);
-+            foreach (var bonus in equipItemSet.Bonuses)
-+            {
-+                if (setCount.Value >= bonus.NumPieces)
-+                {
-+                    if (bonus.BuffId != 0)
-+                    {
-+                        if (Buffs.CheckBuff(bonus.BuffId))
-+                        {
-+                            appliedBuffs.Add(bonus.BuffId);
-+                            continue;
-+                        }
-+                        var buffTemplate = SkillManager.Instance.GetBuffTemplate(bonus.BuffId);
-+
-+                        var newEffect =
-+                            new Buff(this, this, new SkillCasterUnit(ObjId), buffTemplate, null, DateTime.UtcNow)
-+                            {
-+                                AbLevel = itemLevels[setCount.Key]
-+                            };
-+                        Buffs.AddBuff(newEffect);
-+                        appliedBuffs.Add(bonus.BuffId);
-+                    }
-+                    if (bonus.ItemProcId != 0)
-+                    {
-+                        Procs.AddProc(bonus.ItemProcId);
-+                    }
-+                }
-+                else //This needs to be revised? Will we ever remove more than 1 item at a time?
-+                {
-+                    if (bonus.BuffId != 0 && Buffs.CheckBuff(bonus.BuffId) && !appliedBuffs.Contains(bonus.BuffId))
-+                        Buffs.RemoveBuff(bonus.BuffId);
-+                    if (bonus.ItemProcId != 0)
-+                        Procs.RemoveProc(bonus.ItemProcId);
-+                }
-+            }
-+        }
-+    }
-+
-+    private void ApplyArmorGradeBuff(Item itemAdded, Item itemRemoved)
-+    {
-+        if ((itemAdded != null || itemRemoved != null) && (!(itemAdded is Armor) && !(itemRemoved is Armor)))
-+            return;
-+
-+        // Clear any existing armor grade buffs
-+        Buffs.RemoveBuffs((uint)BuffConstants.ArmorBuffTag, 10);
-+
-+        // Get armor pieces by kind
-+        var armorPieces = new Dictionary<ArmorType, List<Armor>>();
-+        foreach (var item in Equipment.Items)
-+        {
-+            if (!(item is Armor armor))
-+                continue;
-+
-+            if (!(item.Template is ArmorTemplate armorTemplate))
-+                continue;
-+
-+            if (armorTemplate.SlotTemplate.SlotTypeId == (ulong)EquipmentItemSlotType.Back)
-+                continue;
-+
-+            if (!armorPieces.ContainsKey((ArmorType)armorTemplate.KindTemplate.TypeId))
-+                armorPieces.Add((ArmorType)armorTemplate.KindTemplate.TypeId, new List<Armor>());
-+            armorPieces[(ArmorType)armorTemplate.KindTemplate.TypeId].Add(armor);
-+        }
-+
-+        if (armorPieces.Count == 0)
-+            return;
-+        // Get kind with most pieces
-+        var piecesOfKind = armorPieces.First();
-+        foreach (var piecesByKind in armorPieces)
-+        {
-+            if (piecesByKind.Value.Count > piecesOfKind.Value.Count) piecesOfKind = piecesByKind;
-+        }
-+
-+        var piecesToAccountForBuff = piecesOfKind.Value;
-+
-+        if (piecesToAccountForBuff.Count < 4)
-+            return;
-+
-+        var finalArmorTemplate = piecesToAccountForBuff.First().Template as ArmorTemplate;
-+        if (finalArmorTemplate == null)
-+            return;
-+
-+        if (piecesToAccountForBuff.Count == 7)
-+        {
-+            BuffTemplate templ = null;
-+            switch ((ArmorType)finalArmorTemplate.WearableTemplate.TypeId)
-+            {
-+                case ArmorType.Cloth:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Cloth7P);
-+                    break;
-+                case ArmorType.Leather:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Leather7P);
-+                    break;
-+                case ArmorType.Metal:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Plate7P);
-+                    break;
-+            }
-+
-+            if (templ != null)
-+                Buffs.AddBuff(new Buff(this, this, new SkillCasterUnit(), templ, null, DateTime.UtcNow));
-+        }
-+        else
-+        {
-+            BuffTemplate templ = null;
-+            switch ((ArmorType)finalArmorTemplate.WearableTemplate.TypeId)
-+            {
-+                case ArmorType.Cloth:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Cloth4P);
-+                    break;
-+                case ArmorType.Leather:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Leather4P);
-+                    break;
-+                case ArmorType.Metal:
-+                    templ = SkillManager.Instance.GetBuffTemplate((uint)BuffConstants.Plate4P);
-+                    break;
-+            }
-+
-+            if (templ != null)
-+                Buffs.AddBuff(new Buff(this, this, new SkillCasterUnit(), templ, null, DateTime.UtcNow));
-+        }
-+
-+        // Get only pieces >= arcane
-+        var piecesAboveArcane = piecesToAccountForBuff.Where(p => p.Grade >= (int)ItemGrade.Arcane).ToList();
-+        if (piecesAboveArcane.Count < 4)
-+            return;
-+
-+        var totalLevel = piecesAboveArcane.Sum(a => a.Template.Level);
-+
-+        // This const was calculated by hand, it might make no sense.
-+        var abLevel = totalLevel * 0.40670554f;
-+        var gradeBuffAbLevel = (abLevel * abLevel) / 15 + 30;
-+        var lowestGrade = piecesAboveArcane.Min(a => a.Grade);
-+
-+        // Apply buff 
-+        if (piecesAboveArcane.First().Template is ArmorTemplate armorTemp)
-+        {
-+            var type = armorTemp.WearableTemplate.TypeId;
-+            var armorGradeBuff =
-+                ItemManager.Instance.GetArmorGradeBuff((ArmorType)type, (ItemGrade)lowestGrade);
-+            var buffTemplate = SkillManager.Instance.GetBuffTemplate(armorGradeBuff.BuffId);
-+
-+            var newEffect =
-+                new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
-+                {
-+                    AbLevel = (uint)gradeBuffAbLevel
-+                };
-+
-+            Buffs.AddBuff(newEffect);
-+        }
-+    }
-+
-+    private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
-+    {
-+        if (itemRemoved != null)
-+        {
-+            // Static Item Buffs
-+            var itemRemovedBuff = ItemGameData.Instance.GetItemBuff(itemRemoved.TemplateId, itemRemoved.Grade);
-+            if (itemRemovedBuff == null)
-+                itemRemovedBuff = SkillManager.Instance.GetBuffTemplate(itemRemoved.Template?.BuffId ?? 0);
-+            if (itemRemovedBuff != null) // remove previous buff
-+            {
-+                if (Buffs.CheckBuff(itemRemovedBuff.Id))
-+                {
-+                    Buffs.RemoveBuff(itemRemovedBuff.Id);
-+                }
-+            }
-+
-+            // Charged Item Buffs
-+            if ((itemRemoved.Template is EquipItemTemplate equipItemTemplate) &&
-+                (equipItemTemplate.RechargeBuffId > 0) &&
-+                Buffs.CheckBuff(equipItemTemplate.RechargeBuffId))
-+                Buffs.RemoveBuff(equipItemTemplate.RechargeBuffId);
-+        }
-+
-+        if (itemAdded != null)
-+        {
-+            // Static Buffs
-+            var itemAddedBuff = ItemGameData.Instance.GetItemBuff(itemAdded.TemplateId, itemAdded.Grade);
-+            if (itemAddedBuff == null)
-+                itemAddedBuff = SkillManager.Instance.GetBuffTemplate(itemAdded.Template.BuffId);
-+            if (itemAddedBuff != null) // add buff from equipped item
-+            {
-+                var newEffect =
-+                    new Buff(this, this, new SkillCasterUnit(), itemAddedBuff, null, DateTime.UtcNow)
-+                    {
-+                        AbLevel = (uint)itemAdded.Template.Level
-+                    };
-+
-+                Buffs.AddBuff(newEffect);
-+            }
-+
-+            // Charged Item Buffs
-+            if ((itemAdded is EquipItem equipItem) && (equipItem.Template is EquipItemTemplate equipItemTemplate) &&
-+                (equipItemTemplate.RechargeBuffId > 0))
-+            {
-+                var addChargeBuff = false;
-+                var checkExpireTime = equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack)
-+                    ? equipItem.UnpackTime
-+                    : equipItem.ChargeStartTime;
-+                checkExpireTime = checkExpireTime.AddMinutes(equipItemTemplate.ChargeLifetime);
-+
-+                // Check against timer
-+                if ((equipItemTemplate.ChargeLifetime > 0) && (checkExpireTime > DateTime.UtcNow))
-+                    addChargeBuff = true;
-+
-+                // Check against charge counter
-+                if ((equipItemTemplate.ChargeCount > 0) && (equipItem.ChargeCount > 0))
-+                    addChargeBuff = true;
-+
-+                // If this item is Bind on unwrap, don't start the buff if it's not unwrapped
-+                if (equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) && (equipItem.HasFlag(ItemFlag.Unpacked) == false))
-+                    addChargeBuff = false;
-+
-+                if (addChargeBuff)
-+                {
-+                    var itemAddedChargedBuff = SkillManager.Instance.GetBuffTemplate(equipItemTemplate.RechargeBuffId);
-+                    var newEffect =
-+                        new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
-+                        {
-+                            AbLevel = (uint)itemAdded.Template.Level
-+                        };
-+                    Buffs.AddBuff(newEffect);
-+                }
-+            }
-+            
-+            // Unit_Modifiers from items
-+            
-+        }
-+
-+        if (itemAdded == null && itemRemoved == null) // This is the first load check to apply buffs for equipped items. 
-+        {
-+            Buffs.RemoveBuffs((uint)BuffConstants.EquipmentBuffTag, 20);
-+            foreach (var item in Equipment.Items)
-+            {
-+                // Static Buffs
-+                if (item.Template.BuffId != 0)
-+                {
-+                    var buffTemplate = ItemGameData.Instance.GetItemBuff(item?.TemplateId ?? 0, item?.Grade ?? 0);
-+                    if (buffTemplate == null)
-+                        buffTemplate = SkillManager.Instance.GetBuffTemplate(item?.Template.BuffId ?? 0);
-+                    var newEffect =
-+                        new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
-+                        {
-+                            AbLevel = (uint)item.Template.Level
-+                        };
-+
-+                    Buffs.AddBuff(newEffect);
-+                }
-+
-+                // Charged Item Buffs
-+                if ((item is EquipItem equipItem) && (equipItem.Template is EquipItemTemplate equipItemTemplate) &&
-+                    (equipItemTemplate.RechargeBuffId > 0))
-+                {
-+                    var addChargeBuff = false;
-+                    var checkExpireTime = equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack)
-+                        ? equipItem.UnpackTime
-+                        : equipItem.ChargeStartTime;
-+                    checkExpireTime = checkExpireTime.AddMinutes(equipItemTemplate.ChargeLifetime);
-+
-+                    // Check against timer
-+                    if ((equipItemTemplate.ChargeLifetime > 0) && (checkExpireTime > DateTime.UtcNow))
-+                        addChargeBuff = true;
-+
-+                    // Check against charge counter
-+                    if ((equipItemTemplate.ChargeCount > 0) && (equipItem.ChargeCount > 0))
-+                        addChargeBuff = true;
-+
-+                    // If this item is Bind on unwrap, don't start the buff if it's not unwrapped
-+                    if (equipItemTemplate.BindType.HasFlag(ItemBindType.BindOnUnpack) && (equipItem.HasFlag(ItemFlag.Unpacked) == false))
-+                        addChargeBuff = false;
-+
-+                    if (addChargeBuff)
-+                    {
-+                        var itemAddedChargedBuff = SkillManager.Instance.GetBuffTemplate(equipItemTemplate.RechargeBuffId);
-+                        var newEffect =
-+                            new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
-+                            {
-+                                AbLevel = (uint)item.Template.Level
-+                            };
-+                        Buffs.AddBuff(newEffect);
-+                    }
-+                }
-+            }
-+        }
-+    }
- }
+@@ -1162,7 +1162,7 @@ private void ApplyEquipItemSetBonuses()
+                         var newEffect =
+                             new Buff(this, this, new SkillCasterUnit(ObjId), buffTemplate, null, DateTime.UtcNow)
+                             {
+-                                AbLevel = itemLevels[setCount.Key]
++                                AbLevel = (ushort)itemLevels[setCount.Key]
+                             };
+                         Buffs.AddBuff(newEffect);
+                         appliedBuffs.Add(bonus.BuffId);
+@@ -1289,7 +1289,7 @@ private void ApplyArmorGradeBuff(Item itemAdded, Item itemRemoved)
+             var newEffect =
+                 new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
+                 {
+-                    AbLevel = (uint)gradeBuffAbLevel
++                    AbLevel = (ushort)gradeBuffAbLevel
+                 };
+ 
+             Buffs.AddBuff(newEffect);
+@@ -1330,7 +1330,7 @@ private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
+                 var newEffect =
+                     new Buff(this, this, new SkillCasterUnit(), itemAddedBuff, null, DateTime.UtcNow)
+                     {
+-                        AbLevel = (uint)itemAdded.Template.Level
++                        AbLevel = (ushort)itemAdded.Template.Level
+                     };
+ 
+                 Buffs.AddBuff(newEffect);
+@@ -1364,7 +1364,7 @@ private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
+                     var newEffect =
+                         new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
+                         {
+-                            AbLevel = (uint)itemAdded.Template.Level
++                            AbLevel = (ushort)itemAdded.Template.Level
+                         };
+                     Buffs.AddBuff(newEffect);
+                 }
+@@ -1388,7 +1388,7 @@ private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
+                     var newEffect =
+                         new Buff(this, this, new SkillCasterUnit(), buffTemplate, null, DateTime.UtcNow)
+                         {
+-                            AbLevel = (uint)item.Template.Level
++                            AbLevel = (ushort)item.Template.Level
+                         };
+ 
+                     Buffs.AddBuff(newEffect);
+@@ -1422,7 +1422,7 @@ private void ApplyEquipEffects(Item itemAdded, Item itemRemoved)
+                         var newEffect =
+                             new Buff(this, this, new SkillCasterUnit(), itemAddedChargedBuff, null, DateTime.UtcNow)
+                             {
+-                                AbLevel = (uint)item.Template.Level
++                                AbLevel = (ushort)item.Template.Level
+                             };
+                         Buffs.AddBuff(newEffect);
+                     }
 diff --git a/AAEmu.Game/Scripts/Commands/ShowInventory.cs b/AAEmu.Game/Scripts/Commands/ShowInventory.cs
-index af539bde8..296a1f9a2 100644
+index 296a1f9a2b..6a13a5df62 100644
 --- a/AAEmu.Game/Scripts/Commands/ShowInventory.cs
 +++ b/AAEmu.Game/Scripts/Commands/ShowInventory.cs
-@@ -1,10 +1,14 @@
--﻿using System.Drawing;
-+﻿using System;
-+using System.Collections.Generic;
-+using System.Drawing;
-+using System.Linq;
- using AAEmu.Game.Core.Managers;
- using AAEmu.Game.Models.Game;
- using AAEmu.Game.Models.Game.Char;
- using AAEmu.Game.Models.Game.Items;
- using AAEmu.Game.Core.Managers.World;
- using AAEmu.Game.Models.Game.Chat;
-+using AAEmu.Game.Models.Game.Items.Actions;
- using AAEmu.Game.Models.Game.Units;
- using AAEmu.Game.Models.Game.NPChar;
- using AAEmu.Game.Utils.Scripts;
-@@ -21,7 +25,7 @@ public void OnLoad()
- 
-     public string GetCommandLineHelp()
-     {
--        return "(target) [containerId]";
-+        return "(target) [containerId] [fix]";
-     }
- 
-     public string GetCommandHelpText()
-@@ -35,7 +39,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
-         {
-             var targetContainer = unit.Equipment;
-             var templateName = "Unit";
--            foreach (var item in targetContainer.Items)
-+            foreach (var item in targetContainer.Items.OrderBy(x => x.Slot).ThenBy(x => x.CreateTime).ToList())
-             {
-                 if (unit is Npc npc)
-                     templateName = string.Format("|nc;@NPC_NAME({0})|r", npc.TemplateId);
-@@ -57,38 +61,56 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
- 
-             var containerId = SlotType.Inventory;
- 
--            if ((args.Length > firstarg + 0) && (uint.TryParse(args[firstarg + 0], out uint argcontainerId)))
-+            if (args.Length > firstarg + 0 && Enum.TryParse<SlotType>(args[firstarg + 0], true, out var argContainerId))
-             {
--                if (((argcontainerId >= 0) && (argcontainerId <= (byte)SlotType.Mail)) || (argcontainerId == (byte)SlotType.System))
--                    containerId = (SlotType)argcontainerId;
-+                if (argContainerId <= SlotType.Mail || argContainerId == SlotType.System)
-+                {
-+                    containerId = argContainerId;
-+                }
+@@ -69,7 +69,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+                 }
                  else
                  {
--                    character.SendMessage("|cFFFF0000[ShowInv] Invalid container Id |r");
-+                    CommandManager.SendErrorText(this, messageOutput, $"Invalid ContainerType Id {argContainerId}");
+-                    CommandManager.SendErrorText(this, messageOutput, $"Invalid ContainerType Id {argContainerId}");
++                    //CommandManager.SendMessage(this, messageOutput, $"Invalid ContainerType Id {argContainerId}");
                      return;
                  }
              }
- 
-+            var doTryFix = args.Length > firstarg + 1 && args[firstarg + 1].Equals("fix", StringComparison.InvariantCultureIgnoreCase);
-+            var invalidItems = new List<Item>();
- 
-             var targetContainer = targetPlayer.Inventory.Bag;
-             if (targetPlayer.Inventory._itemContainers.TryGetValue(containerId, out targetContainer))
-             {
--                var showWarnings = (targetContainer.ContainerType == SlotType.Equipment) || (targetContainer.ContainerType == SlotType.Inventory) || (targetContainer.ContainerType == SlotType.Bank);
-+                var showWarnings = targetContainer.ContainerType == SlotType.Equipment ||
-+                                   targetContainer.ContainerType == SlotType.EquipmentMate ||
-+                                   targetContainer.ContainerType == SlotType.Inventory ||
-+                                   targetContainer.ContainerType == SlotType.Bank;
-                 var lastSlotNumber = -1;
-                 var hasSlotErrors = 0;
--                foreach (var item in targetContainer.Items)
-+                foreach (var item in targetContainer.Items.OrderBy(x => x.Slot).ThenBy(x => x.CreateTime).ToList())
-                 {
-+                    var additionalErrors = string.Empty;
-                     var slotName = targetContainer.ContainerType.ToString() + "-" + item.Slot.ToString();
-                     if (item.SlotType == SlotType.Equipment)
-                         slotName = ((EquipmentItemSlot)item.Slot).ToString();
-                     if (lastSlotNumber == item.Slot)
-                     {
-                         slotName = $"|cFFFF0000**{slotName}**|r";
-+                        invalidItems.Add(item);
-+                        hasSlotErrors++;
-+                    }
-+                    else if (item.SlotType != item._holdingContainer?.ContainerType)
-+                    {
-+                        additionalErrors += "|cFFFF0000**Container Error**|r";
-+                        invalidItems.Add(item);
-                         hasSlotErrors++;
-                     }
--                    var countName = "|ng;" + item.Count.ToString() + "|r x ";
-+
-+                    var countName = $"|ng;{item.Count}|r x ";
+@@ -108,9 +108,8 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+                     var countName = $"|ng;{item.Count}|r x ";
                      if (item.Count == 1)
                          countName = string.Empty;
--                    character.SendMessage($"[|nd;{targetPlayer.Name}|r][{slotName}] |nb;{item.Id}|r {countName}|nn;{item.TemplateId}|r = @ITEM_NAME({item.TemplateId})");
-+                    }
-+
-+                    messageOutput.SendMessage($"[|nd;{targetPlayer.Name}|r][{slotName}] |nb;{item.Id}|r {countName}|nn;{item.TemplateId}|r = @ITEM_NAME({item.TemplateId}){additionalErrors}");
+-                    }
+ 
+-                    messageOutput.SendMessage($"[|nd;{targetPlayer.Name}|r][{slotName}] |nb;{item.Id}|r {countName}|nn;{item.TemplateId}|r = @ITEM_NAME({item.TemplateId}){additionalErrors}");
++                    //messageOutput.SendMessage($"[|nd;{targetPlayer.Name}|r][{slotName}] |nb;{item.Id}|r {countName}|nn;{item.TemplateId}|r = @ITEM_NAME({item.TemplateId}){additionalErrors}");
                      lastSlotNumber = item.Slot;
                  }
  
-@@ -100,6 +122,53 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
-             {
-                 character.SendMessage(ChatType.System, $"[ShowInv] Unused container Id.", Color.Red);
+@@ -136,7 +135,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+                             var nextSlot = targetContainer.Owner.Inventory.Bag.GetUnusedSlot(-1);
+                             if ((nextSlot < 0) || !targetContainer.Owner.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, invalidItem))
+                             {
+-                                CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room in your inventory to move this item!");
++                                //CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room in your inventory to move this item!");
+                                 continue;
+                             }
+                             invalidItem.Slot = nextSlot;
+@@ -152,7 +151,7 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+                             var nextSlot = targetContainer.GetUnusedSlot(-1);
+                             if (nextSlot < 0)
+                             {
+-                                CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room!");
++                                //CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room!");
+                                 continue;
+                             }
+                             invalidItem.Slot = nextSlot;
+@@ -166,10 +165,9 @@ public void Execute(Character character, string[] args, IMessageOutput messageOu
+ 
+                 if (fixedCount > 0)
+                 {
+-                    CommandManager.SendNormalText(this, messageOutput, $"{fixedCount} items have been re-slotted, fully |ni;reboot your game client|r for the fixes to take affect");
++                    //CommandManager.SendNormalText(this, messageOutput, $"{fixedCount} items have been re-slotted, fully |ni;reboot your game client|r for the fixes to take affect");
+                 }
              }
-+
-+            if (doTryFix && invalidItems.Count > 0 && targetContainer != null)
-+            {
-+                var fixedCount = 0;
-+                switch (targetContainer.ContainerType)
-+                {
-+                    case SlotType.Equipment:
-+                    case SlotType.EquipmentMate:
-+                        // Fix equipment by moving it to inventory
-+                        foreach (var invalidItem in invalidItems)
-+                        {
-+                            var nextSlot = targetContainer.Owner.Inventory.Bag.GetUnusedSlot(-1);
-+                            if ((nextSlot < 0) || !targetContainer.Owner.Inventory.Bag.AddOrMoveExistingItem(ItemTaskType.Invalid, invalidItem))
-+                            {
-+                                CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room in your inventory to move this item!");
-+                                continue;
-+                            }
-+                            invalidItem.Slot = nextSlot;
-+                            invalidItem._holdingContainer = targetContainer.Owner.Inventory.Bag;
-+                            fixedCount++;
-+                        }
-+                        break;
-+                    case SlotType.Inventory:
-+                    case SlotType.Bank:
-+                        // Fix things
-+                        foreach (var invalidItem in invalidItems)
-+                        {
-+                            var nextSlot = targetContainer.GetUnusedSlot(-1);
-+                            if (nextSlot < 0)
-+                            {
-+                                CommandManager.SendErrorText(this, messageOutput, $"Unable to fix {invalidItem.TemplateId} ({invalidItem.TemplateId}) ItemId: {invalidItem.Id}, no more room!");
-+                                continue;
-+                            }
-+                            invalidItem.Slot = nextSlot;
-+                            fixedCount++;
-+                        }
-+                        break;
-+                    default:
-+                        // Can't or doesn't need fixing
-+                        break;
-+                }
-+
-+                if (fixedCount > 0)
-+                {
-+                    CommandManager.SendNormalText(this, messageOutput, $"{fixedCount} items have been re-slotted, fully |ni;reboot your game client|r for the fixes to take affect");
-+                }
-+            }
          }
- 
+-
      }
-diff --git a/AAEmu.UnitTests/Game/Models/Game/Items/Containers/InventoryTests.cs b/AAEmu.UnitTests/Game/Models/Game/Items/Containers/InventoryTests.cs
-index cb8d43784..a33cdcfeb 100644
---- a/AAEmu.UnitTests/Game/Models/Game/Items/Containers/InventoryTests.cs
-+++ b/AAEmu.UnitTests/Game/Models/Game/Items/Containers/InventoryTests.cs
-@@ -15,7 +15,8 @@ public void InventoryAddsItem()
-     {
-         // ItemIdManager.Instance.Initialize();
- 
--        var container = new ItemContainer(new CharacterMock().Id, SlotType.Inventory, false);
-+        var mockCharacter = new CharacterMock();
-+        var container = new ItemContainer(mockCharacter.Id, SlotType.Inventory, false, mockCharacter);
-         var item = InventoryTestUtils.MockItem(1, 1);
- 
-         Assert.True(container.AddOrMoveExistingItem(ItemTaskType.Gm, item, 1));
+ }
