@@ -1,93 +1,22 @@
-From 5575b07177950b2b0d44e279d230f8f9c6b01104 Mon Sep 17 00:00:00 2001
-From: Donella Kreiger <ahlyl94@gmail.com>
-Date: Tue, 13 Aug 2024 19:58:26 +0800
-Subject: [PATCH] [Game] Implement escape effect (#1075)
+From 490eabe5eed2fccd8d174fc07cabbb5e487f09c9 Mon Sep 17 00:00:00 2001
+From: NLObP <38990417+NL0bP@users.noreply.github.com>
+Date: Tue, 13 Aug 2024 22:08:25 +0300
+Subject: [PATCH] Merge errors fixed;
 
-* [Game] Implement escape effect
-
-* [Game] Fix the character's inability to obtain resurrection points while in the dungeon
 ---
- .../Skills/Effects/SpecialEffects/Escape.cs   | 45 +++++++++++++++++--
- AAEmu.Game/Models/Game/Skills/Skill.cs        |  2 +-
- 2 files changed, 43 insertions(+), 4 deletions(-)
+ AAEmu.Game/GameData/AchievementGameData.cs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
-index 11772cf5f5..9d018d6384 100644
---- a/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Effects/SpecialEffects/Escape.cs
-@@ -1,5 +1,7 @@
- ﻿using System;
--
-+using AAEmu.Game.Core.Managers;
-+using AAEmu.Game.Core.Managers.World;
-+using AAEmu.Game.Core.Packets.G2C;
- using AAEmu.Game.Models.Game.Char;
- using AAEmu.Game.Models.Game.Units;
+diff --git a/AAEmu.Game/GameData/AchievementGameData.cs b/AAEmu.Game/GameData/AchievementGameData.cs
+index 0d8971f82..be37fd0c9 100644
+--- a/AAEmu.Game/GameData/AchievementGameData.cs
++++ b/AAEmu.Game/GameData/AchievementGameData.cs
+@@ -22,7 +22,7 @@ public class AchievementGameData : Singleton<AchievementGameData>, IGameDataLoad
+     private Dictionary<uint, List<AchievementObjectives>> _achievementObjectives;
+     private Dictionary<uint, List<PreCompletedAchievements>> _preCompletedAchievements;
  
-@@ -7,6 +9,7 @@ namespace AAEmu.Game.Models.Game.Skills.Effects.SpecialEffects;
- 
- public class Escape : SpecialEffectAction
- {
-+    protected override SpecialType SpecialEffectActionType => SpecialType.Escape;
-     public override void Execute(BaseUnit caster,
-         SkillCaster casterObj,
-         BaseUnit target,
-@@ -20,7 +23,43 @@ public override void Execute(BaseUnit caster,
-         int value3,
-         int value4)
+-    public void Load(SqliteConnection connection)
++    public void Load(SqliteConnection connection, SqliteConnection connection2)
      {
--        // TODO ...
--        if (caster is Character) { Logger.Debug("Special effects: Escape value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4); }
-+        
-+        if (caster is Character character)
-+        {
-+            Logger.Debug("Special effects: Escape value1 {0}, value2 {1}, value3 {2}, value4 {3}", value1, value2, value3, value4);
-+            
-+            var portal = new Portal();
-+            
-+            if (WorldManager.DefaultInstanceId != character.InstanceId)
-+            {
-+                // var portal = PortalManager.Instance.GetClosestReturnPortal(character);
-+                // character.Transform.World;
-+                var w = WorldManager.Instance.GetWorld(character.InstanceId);
-+                if (w == null)
-+                {
-+                    return;
-+                }
-+                portal.X = w.SpawnPosition.X;
-+                portal.Y = w.SpawnPosition.Y;
-+                portal.Z = w.SpawnPosition.Z;
-+                portal.ZRot = w.SpawnPosition.Roll;
-+            }
-+            else
-+            {
-+                portal = PortalManager.Instance.GetClosestReturnPortal(character); 
-+            }
-+            
-+            // force transported out
-+            character.BroadcastPacket(
-+                new SCCharacterResurrectedPacket(
-+                    character.ObjId,
-+                    portal.X,
-+                    portal.Y,
-+                    portal.Z,
-+                    portal.ZRot
-+                ),
-+                true
-+            );
-+        }
-     }
- }
-diff --git a/AAEmu.Game/Models/Game/Skills/Skill.cs b/AAEmu.Game/Models/Game/Skills/Skill.cs
-index 75f8a988bb..f9ca602f4d 100644
---- a/AAEmu.Game/Models/Game/Skills/Skill.cs
-+++ b/AAEmu.Game/Models/Game/Skills/Skill.cs
-@@ -249,7 +249,7 @@ public SkillResult Use(BaseUnit caster, SkillCaster casterCaster, SkillCastTarge
- 
-         if (Template.Effects.Count > 0 && Template.Effects.First()?.Template is OpenPortalEffect)
-         {
--            if (0 != caster.InstanceId)
-+            if (WorldManager.DefaultInstanceId != caster.InstanceId)
-             {
-                 return SkillResult.InvalidLocation;
-             }
+         _charRecords = new Dictionary<uint, CharRecords>();
+         _achievements = new Dictionary<uint, Achievements>();
