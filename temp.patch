@@ -1,87 +1,36 @@
-From 791ea9e6ac17d8756f32fa4117b15703d1a3e8c6 Mon Sep 17 00:00:00 2001
-From: Donella Kreiger <ahlyl94@gmail.com>
-Date: Wed, 14 Aug 2024 16:38:54 +0800
-Subject: [PATCH] [Game] When a character is level change or a zone change
- occurs, update the information in the expedition team. (#1078)
+From fe3b318a34299ddf74ec4edadff32a3627189a35 Mon Sep 17 00:00:00 2001
+From: Yanlongli <ahlyl94@gmail.com>
+Date: Fri, 16 Aug 2024 13:34:51 +0800
+Subject: [PATCH] [Game] Check recipients when sending mails (#1080)
 
 ---
- AAEmu.Game/Core/Managers/ExpeditionManager.cs          | 1 +
- AAEmu.Game/Models/Game/Char/Character.cs               | 3 +++
- AAEmu.Game/Models/Game/Expeditions/Expedition.cs       | 9 +++++++++
- AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs | 5 ++++-
- 4 files changed, 17 insertions(+), 1 deletion(-)
+ AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs | 9 +++++++++
+ 1 file changed, 9 insertions(+)
 
-diff --git a/AAEmu.Game/Core/Managers/ExpeditionManager.cs b/AAEmu.Game/Core/Managers/ExpeditionManager.cs
-index f5564eac83..d0166f8c1c 100644
---- a/AAEmu.Game/Core/Managers/ExpeditionManager.cs
-+++ b/AAEmu.Game/Core/Managers/ExpeditionManager.cs
-@@ -663,6 +663,7 @@ public static ExpeditionMember GetMemberFromCharacter(uint characterId)
-         member.Abilities = [(byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3];
-         member.ExpeditionId = expedition.Id;
-         member.CharacterId = character.Id;
-+        member.LastWorldLeaveTime = DateTime.UtcNow;
+diff --git a/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs b/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
+index 12a42d6fb..d667fb7a4 100644
+--- a/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
++++ b/AAEmu.Game/Core/Packets/C2G/CSSendMailPacket.cs
+@@ -2,6 +2,8 @@
+ using System.Linq;
  
-         return member;
-     }
-diff --git a/AAEmu.Game/Models/Game/Char/Character.cs b/AAEmu.Game/Models/Game/Char/Character.cs
-index 0d7499b47d..9df9ffb3bd 100644
---- a/AAEmu.Game/Models/Game/Char/Character.cs
-+++ b/AAEmu.Game/Models/Game/Char/Character.cs
-@@ -1357,6 +1357,7 @@ public void CheckLevelUp()
-             change = true;
-             Level++;
-             needExp = ExperienceManager.Instance.GetExpForLevel((byte)(Level + 1));
-+            Expedition?.OnCharacterRefresh(this);
-         }
+ using AAEmu.Commons.Network;
++using AAEmu.Game.Core.Managers;
++using AAEmu.Game.Core.Managers.UnitManagers;
+ using AAEmu.Game.Core.Managers.World;
+ using AAEmu.Game.Core.Network.Game;
+ using AAEmu.Game.Models.Game;
+@@ -47,6 +49,13 @@ public override void Read(PacketStream stream)
  
-         if (change)
-@@ -1377,6 +1378,7 @@ public void CheckExp()
-         {
-             Level++;
-             needExp = ExperienceManager.Instance.GetExpForLevel((byte)(Level + 1));
-+            Expedition?.OnCharacterRefresh(this);
-         }
-     }
- 
-@@ -1577,6 +1579,7 @@ public void OnZoneChange(uint lastZoneKey, uint newZoneKey)
-         }
-         if (newZone != null)
-         {
-+            Expedition?.OnCharacterRefresh(this);
-             // Apply the new zone buff if needed
-             var newZoneGroup = ZoneManager.Instance.GetZoneGroupById(newZone.GroupId);
-             if ((newZoneGroup != null) && (newZoneGroup.BuffId != 0))
-diff --git a/AAEmu.Game/Models/Game/Expeditions/Expedition.cs b/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
-index 0046e34b49..cc4b371e83 100644
---- a/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
-+++ b/AAEmu.Game/Models/Game/Expeditions/Expedition.cs
-@@ -269,4 +269,13 @@ public PacketStream WriteInfo(PacketStream stream)
-         stream.Write(0u);                // type
-         return stream;
-     }
+         // Validate if we are near a MailBox
+         bool mailCheckOK;
 +
-+    public void OnCharacterRefresh(Character character)
-+    {
-+        var member = GetMember(character);
-+        if (member == null)
++        if (string.IsNullOrWhiteSpace(receiverCharName) || NameManager.Instance.GetCharacterId(receiverCharName) == 0)
++        {
++            Connection.ActiveChar.SendErrorMessage(ErrorMessageType.MailReceiverNotFound);
 +            return;
-+        member.Refresh(character);
-+        SendPacket(new SCExpeditionMemberStatusChangedPacket(member, 0));
-+    }
- }
-diff --git a/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs b/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
-index d30741e19d..8b045df8e4 100644
---- a/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
-+++ b/AAEmu.Game/Models/Game/Expeditions/ExpeditionMember.cs
-@@ -38,7 +38,10 @@ public void Refresh(Character character)
-         InParty = character.InParty;
-         Position = character.Transform.World.Position;
-         ZoneId = character.Transform.ZoneId;
--        Abilities = [(byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3];
-+        Abilities = new[] { (byte)character.Ability1, (byte)character.Ability2, (byte)character.Ability3 };
-+        Level = character.Level;
-+        Name = character.Name;
-+        LastWorldLeaveTime = DateTime.UtcNow;
-     }
- 
-     public void Save(MySqlConnection connection, MySqlTransaction transaction)
++        }
++        
+         if (doodad != null)
+         {
+             // Cannot rely on doodad GroupID being "Other - Mailboxes (6)", as some of the mailboxes belong to other groups (e.g. "Housing - Furniture").
