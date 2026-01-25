@@ -1212,18 +1212,11 @@ public class WorldManager : Singleton<WorldManager>, IWorldManager
 
         StartingFirstJourney(character);
 
-        var template = SkillManager.Instance.GetSkillTemplate(33599);
-        if (template != null)
-        {
-            Logger.Warn($"DEBUG: SkillTemplate OK: id={template.Id}");
+        character.Skills.SendLoadedPassiveBuffs();
 
-
-            var skill = new Skill(template, character);
-            character.Connection.SendPacket(new SCSkillLearnedPacket(skill));
-        }
 
     }
-    
+
 
     private void StartingFirstJourney(Character character)
     {
