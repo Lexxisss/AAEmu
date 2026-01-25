@@ -11,11 +11,14 @@ using AAEmu.Game.Models.Game.Items;
 using AAEmu.Game.Models.Game.Items.Actions;
 using AAEmu.Game.Models.Game.Items.Templates;
 using AAEmu.Game.Models.Game.Units;
+using NLog;
 
 namespace AAEmu.Game.Models.Game.Skills.Effects.SpecialEffects;
 
 public class GradeEnchant : SpecialEffectAction
 {
+    private static Logger Logger { get; } = LogManager.GetCurrentClassLogger();
+
     protected override SpecialType SpecialEffectActionType => SpecialType.GradeEnchant;
 
     private enum GradeEnchantResult
@@ -41,6 +44,8 @@ public class GradeEnchant : SpecialEffectAction
         int value3,
         int value4)
     {
+        Logger.Info($"[GRADE_ENCHANT] Starting grade enchant - Character: {caster?.Name}, ItemTargetId: {(targetObj as SkillCastItemTarget)?.Id}, ScrollId: {(casterObj as SkillItem)?.ItemId}, ItemType: {value3}");
+
         if (caster is not Character character)
             return;
 
@@ -52,7 +57,12 @@ public class GradeEnchant : SpecialEffectAction
 
         var item = character.Inventory.GetItemById(itemTarget.Id);
         if (item == null)
+        {
+            Logger.Error($"[GRADE_ENCHANT] Target item not found: {itemTarget.Id}");
             return;
+        }
+
+        Logger.Info($"[GRADE_ENCHANT] Processing item: {item.TemplateId} ({item.Template?.Name}), Grade: {item.Grade}");
 
         bool isLucky = value1 != 0;
 
@@ -79,21 +89,36 @@ public class GradeEnchant : SpecialEffectAction
             }
 
             useCharm = true;
+            Logger.Info($"[GRADE_ENCHANT] Using charm: {charmItem.TemplateId}, RequireGradeMin: {charmInfo.RequireGradeMin}, RequireGradeMax: {charmInfo.RequireGradeMax}");
         }
 
         var gradeTemplate = ItemManager.Instance.GetGradeTemplate(item.Grade);
         if (gradeTemplate == null)
+        {
+            Logger.Error($"[GRADE_ENCHANT] Grade template not found for grade: {item.Grade}");
             return;
+        }
 
         int cost = GoldCost(gradeTemplate, item, value3);
-        if (cost < 0 || character.Money < cost)
+        Logger.Info($"[GRADE_ENCHANT] Calculated cost: {cost}, Character money: {character.Money}, ItemType: {value3}");
+        
+        if (cost < 0)
         {
+            Logger.Error($"[GRADE_ENCHANT] Invalid cost calculation: {cost} for item {item.TemplateId}, grade {item.Grade}, type {value3}");
+            character.SendErrorMessage(ErrorMessageType.ItemCannotUse);
+            return;
+        }
+        
+        if (character.Money < cost)
+        {
+            Logger.Warn($"[GRADE_ENCHANT] Not enough money - Need: {cost}, Have: {character.Money}");
             character.SendErrorMessage(ErrorMessageType.NotEnoughMoney);
             return;
         }
 
         if (!character.Inventory.CheckItems(SlotType.Inventory, scroll.ItemTemplateId, 1))
         {
+            Logger.Error($"[GRADE_ENCHANT] Scroll not found in inventory: {scroll.ItemTemplateId}");
             character.SendErrorMessage(ErrorMessageType.NotEnoughRequiredItem);
             return;
         }
@@ -102,8 +127,11 @@ public class GradeEnchant : SpecialEffectAction
 
         var result = RollRegrade(item, isLucky, useCharm, charmInfo);
 
+        Logger.Info($"[GRADE_ENCHANT] Regrade result: {result}, Final grade: {item.Grade}");
+
         if (result == GradeEnchantResult.Break)
         {
+            Logger.Info($"[GRADE_ENCHANT] Item broke during regrade: {item.TemplateId}");
             item._holdingContainer.RemoveItem(ItemTaskType.GradeEnchant, item, true);
         }
         else
@@ -115,6 +143,7 @@ public class GradeEnchant : SpecialEffectAction
         }
 
         character.SubtractMoney(SlotType.Inventory, cost);
+        Logger.Info($"[GRADE_ENCHANT] Subtracted {cost} money from character {character.Name}");
 
         if (useCharm)
         {
@@ -123,6 +152,7 @@ public class GradeEnchant : SpecialEffectAction
                 charmItem.TemplateId,
                 1,
                 charmItem);
+            Logger.Info($"[GRADE_ENCHANT] Consumed charm: {charmItem.TemplateId}");
         }
 
         character.SendPacket(new SCItemGradeEnchantResultPacket(
@@ -139,6 +169,7 @@ public class GradeEnchant : SpecialEffectAction
         if (item.Grade >= 8 &&
             (result == GradeEnchantResult.Success || result == GradeEnchantResult.GreatSuccess))
         {
+            Logger.Info($"[GRADE_ENCHANT] High grade achievement: Grade {item.Grade} for item {item.TemplateId}");
             // WorldManager.Instance.BroadcastPacketToServer(...)
         }
     }
@@ -202,18 +233,47 @@ public class GradeEnchant : SpecialEffectAction
 
     private static int GoldCost(GradeTemplate gradeTemplate, Item item, int itemType)
     {
+        Logger.Debug($"[GRADE_ENCHANT] Calculating gold cost - ItemId: {item.TemplateId}, Grade: {item.Grade}, ItemType: {itemType}");
+
         uint slotTypeId = itemType switch
         {
             1 => ((WeaponTemplate)item.Template).HoldableTemplate.SlotTypeId,
             2 => ((ArmorTemplate)item.Template).SlotTemplate.SlotTypeId,
             24 => ((AccessoryTemplate)item.Template).SlotTemplate.SlotTypeId,
+            28 => 1000, // Временное решение для корабельной экипировки - используем специальный SlotTypeId
             _ => 0
         };
 
+        Logger.Debug($"[GRADE_ENCHANT] Determined SlotTypeId: {slotTypeId} for ItemType: {itemType}");
+
         if (slotTypeId == 0)
+        {
+            Logger.Error($"[GRADE_ENCHANT] Invalid SlotTypeId (0) for item {item.TemplateId}, ItemType: {itemType}");
             return -1;
+        }
 
         var costData = ItemManager.Instance.GetEquipSlotEnchantingCost(slotTypeId);
+        if (costData == null)
+        {
+            if (itemType == 28)
+            {
+                Logger.Warn($"[GRADE_ENCHANT] No cost data found for ship equipment SlotTypeId: {slotTypeId}, trying armor cost as fallback");
+                // Используем стоимость от брони (slot_type_id 2) как запасной вариант
+                costData = ItemManager.Instance.GetEquipSlotEnchantingCost(2);
+                if (costData != null)
+                {
+                    Logger.Info($"[GRADE_ENCHANT] Using armor cost as fallback for ship equipment: {costData.Cost}");
+                }
+            }
+            
+            if (costData == null)
+            {
+                Logger.Error($"[GRADE_ENCHANT] No cost data found for SlotTypeId: {slotTypeId}");
+                return -1;
+            }
+        }
+
+        Logger.Debug($"[GRADE_ENCHANT] Cost data for SlotTypeId {slotTypeId}: {costData.Cost}");
 
         var parameters = new Dictionary<string, double>
         {
@@ -222,8 +282,19 @@ public class GradeEnchant : SpecialEffectAction
             ["equip_slot_enchant_cost"] = costData.Cost
         };
 
+        Logger.Debug($"[GRADE_ENCHANT] Formula parameters - item_grade: {gradeTemplate.EnchantCost}, item_level: {item.Template.Level}, equip_slot_enchant_cost: {costData.Cost}");
+
         var formula = FormulaManager.Instance.GetFormula((uint)FormulaKind.GradeEnchantCost);
-        return (int)formula.Evaluate(parameters);
+        if (formula == null)
+        {
+            Logger.Error($"[GRADE_ENCHANT] GradeEnchantCost formula not found!");
+            return -1;
+        }
+
+        var result = (int)formula.Evaluate(parameters);
+        Logger.Debug($"[GRADE_ENCHANT] Formula result: {result}");
+        
+        return result;
     }
 
     private static GradeTemplate GetNextGrade(GradeTemplate current, int delta)
